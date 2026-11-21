@@ -4,7 +4,6 @@ import com.wordarena.common.GameMode;
 import com.wordarena.common.PlayerView;
 import com.wordarena.common.RoomInfo;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +23,7 @@ public class GameRoom {
     private final Map<String, GamePlayer> players;
 
     private boolean started;
+    private DuelRound duelRound;
 
     public GameRoom(
             String roomId,
@@ -136,41 +136,62 @@ public class GameRoom {
             String playerId,
             boolean ready
     ) {
+        if (started) {
+            throw new IllegalStateException(
+                    "Ready states cannot change after the game starts."
+            );
+        }
+
         requirePlayer(playerId).setReady(ready);
     }
 
-    public synchronized void start(String requestingPlayerId) {
-        validatePlayerId(requestingPlayerId);
+    public synchronized void start(
+            String requestingPlayerId
+    ) {
+        validateStartConditions(requestingPlayerId);
+        started = true;
+    }
 
-        if (!hostPlayerId.equals(requestingPlayerId)) {
+    public synchronized DuelRound startDuel(
+            String requestingPlayerId,
+            String secretWord
+    ) {
+        if (gameMode != GameMode.DUEL) {
             throw new IllegalStateException(
-                    "Only the room host can start the game."
+                    "This room is not configured for DUEL mode."
             );
         }
 
-        if (started) {
-            throw new IllegalStateException(
-                    "The game has already started."
-            );
-        }
+        validateStartConditions(requestingPlayerId);
 
-        if (players.size() < MIN_PLAYERS) {
-            throw new IllegalStateException(
-                    "At least two players are required."
-            );
-        }
-
-        boolean everyPlayerReady = players.values()
-                .stream()
-                .allMatch(GamePlayer::isReady);
-
-        if (!everyPlayerReady) {
-            throw new IllegalStateException(
-                    "Every player must be ready before starting."
-            );
-        }
+        duelRound = new DuelRound(
+                secretWord,
+                List.copyOf(players.values())
+        );
 
         started = true;
+
+        return duelRound;
+    }
+
+    public synchronized DuelRound.GuessOutcome submitDuelGuess(
+            String playerId,
+            String guessedWord
+    ) {
+        if (!started || duelRound == null) {
+            throw new IllegalStateException(
+                    "The Duel round has not started."
+            );
+        }
+
+        return duelRound.submitGuess(
+                playerId,
+                guessedWord
+        );
+    }
+
+    public synchronized Optional<DuelRound> getDuelRound() {
+        return Optional.ofNullable(duelRound);
     }
 
     public synchronized Optional<GamePlayer> findPlayer(
@@ -254,6 +275,40 @@ public class GameRoom {
 
     public synchronized boolean isStarted() {
         return started;
+    }
+
+    private void validateStartConditions(
+            String requestingPlayerId
+    ) {
+        validatePlayerId(requestingPlayerId);
+
+        if (!hostPlayerId.equals(requestingPlayerId)) {
+            throw new IllegalStateException(
+                    "Only the room host can start the game."
+            );
+        }
+
+        if (started) {
+            throw new IllegalStateException(
+                    "The game has already started."
+            );
+        }
+
+        if (players.size() < MIN_PLAYERS) {
+            throw new IllegalStateException(
+                    "At least two players are required."
+            );
+        }
+
+        boolean everyPlayerReady = players.values()
+                .stream()
+                .allMatch(GamePlayer::isReady);
+
+        if (!everyPlayerReady) {
+            throw new IllegalStateException(
+                    "Every player must be ready before starting."
+            );
+        }
     }
 
     private static void validateMaximumPlayers(

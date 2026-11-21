@@ -1,5 +1,9 @@
 package com.wordarena.server.tcp;
 
+import com.wordarena.server.game.DuelGameService;
+import com.wordarena.server.game.RoomManager;
+import com.wordarena.server.game.WordBank;
+
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -13,48 +17,78 @@ public class GameServer {
     private final int port;
     private final ExecutorService clientExecutor;
     private final PlayerSessionRegistry sessionRegistry;
+    private final RoomManager roomManager;
+    private final ClientConnectionRegistry connectionRegistry;
+    private final WordBank wordBank;
+    private final DuelGameService duelGameService;
 
     public GameServer(int port) {
         this.port = port;
         this.clientExecutor = Executors.newCachedThreadPool();
         this.sessionRegistry = new PlayerSessionRegistry();
+        this.roomManager = new RoomManager();
+        this.connectionRegistry =
+                new ClientConnectionRegistry();
+
+        this.wordBank = new WordBank();
+
+        this.duelGameService = new DuelGameService(
+                roomManager,
+                wordBank
+        );
     }
 
     public void start() {
-        System.out.println("Starting WordArena TCP server...");
+        System.out.println(
+                "Starting WordArena TCP server..."
+        );
 
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
+        try (ServerSocket serverSocket =
+                     new ServerSocket(port)) {
+
             System.out.println(
-                    "WordArena TCP server is listening on port " + port
+                    "WordArena TCP server is listening on port "
+                            + port
             );
 
             while (!serverSocket.isClosed()) {
-                Socket clientSocket = serverSocket.accept();
+                Socket clientSocket =
+                        serverSocket.accept();
 
                 System.out.println(
                         "Client connected: "
-                                + clientSocket.getRemoteSocketAddress()
+                                + clientSocket
+                                .getRemoteSocketAddress()
                 );
 
                 clientExecutor.submit(
                         new ClientHandler(
                                 clientSocket,
-                                sessionRegistry
+                                sessionRegistry,
+                                roomManager,
+                                connectionRegistry,
+                                duelGameService
                         )
                 );
             }
         } catch (IOException exception) {
             System.err.println(
-                    "TCP server error: " + exception.getMessage()
+                    "TCP server error: "
+                            + exception.getMessage()
             );
         } finally {
             clientExecutor.shutdown();
-            System.out.println("WordArena TCP server stopped.");
+
+            System.out.println(
+                    "WordArena TCP server stopped."
+            );
         }
     }
 
     public static void main(String[] args) {
-        GameServer server = new GameServer(DEFAULT_PORT);
+        GameServer server =
+                new GameServer(DEFAULT_PORT);
+
         server.start();
     }
 }
