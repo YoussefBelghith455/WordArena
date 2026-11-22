@@ -1,20 +1,29 @@
 
 package com.wordarena.gui;
 
+import com.wordarena.client.tcp.GameSession;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
-import javafx.scene.control.ScrollPane;
 import javafx.scene.layout.HBox;
-import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
 public class LobbyView extends VBox {
 
+    private final GameSession gameSession;
+
     public LobbyView(String username) {
+        this(username, null);
+    }
+
+    public LobbyView(
+            String username,
+            GameSession gameSession
+    ) {
+        this.gameSession = gameSession;
 
         getStyleClass().add("lobby-root");
         setAlignment(Pos.CENTER);
@@ -27,95 +36,158 @@ public class LobbyView extends VBox {
         Label subtitle = new Label("MULTIPLAYER WORD BATTLE");
         subtitle.getStyleClass().add("lobby-subtitle");
 
-        Label welcome = new Label("Welcome back, " + username + "!");
+        Label welcome = new Label(
+                "Welcome back, " + username + "!"
+        );
         welcome.getStyleClass().add("lobby-welcome");
 
-        Label roomsLabel = new Label("AVAILABLE ROOMS");
+        Label roomsLabel = new Label("MULTIPLAYER LOBBY");
         roomsLabel.getStyleClass().add("section-title");
 
-        Label room1 = new Label("DUEL  |  Room 1  |  1/2 Players");
-        Label room2 = new Label("COOPERATIVE  |  Room 2  |  2/4 Players");
+        Label informationLabel = new Label(
+                "Create a new room or join a room using its ID."
+        );
+        informationLabel.getStyleClass().add("lobby-subtitle");
+        informationLabel.setWrapText(true);
+        informationLabel.setAlignment(Pos.CENTER);
+        informationLabel.setMaxWidth(460);
 
-        room1.getStyleClass().add("room-card");
-        room2.getStyleClass().add("room-card");
+        Label roomInfoLabel = new Label(
+                "Public room discovery will be available "
+                        + "when the RMI lobby is integrated."
+        );
+        roomInfoLabel.getStyleClass().add("room-card");
+        roomInfoLabel.setWrapText(true);
+        roomInfoLabel.setAlignment(Pos.CENTER);
+        roomInfoLabel.setMaxWidth(460);
 
-        VBox roomsBox = new VBox(12, room1, room2);
-        roomsBox.setAlignment(Pos.CENTER);
-        roomsBox.setMaxWidth(460);
+        boolean sessionAvailable =
+                gameSession != null
+                        && gameSession.getTcpClient().isConnected();
+
+        Label connectionLabel = new Label(
+                sessionAvailable
+                        ? "SERVER CONNECTION: CONNECTED"
+                        : "SERVER CONNECTION: DISCONNECTED"
+        );
+        connectionLabel.getStyleClass().add("lobby-welcome");
 
         Button createButton = new Button("CREATE ROOM");
         Button joinButton = new Button("JOIN ROOM");
-        Button testGameButton = new Button("TEST GAME");
 
         createButton.getStyleClass().add("neon-button");
         joinButton.getStyleClass().add("neon-button");
-        testGameButton.getStyleClass().add("secondary-button");
 
         createButton.setPrefWidth(190);
         joinButton.setPrefWidth(190);
-        testGameButton.setPrefWidth(390);
 
-        HBox actions = new HBox(15, createButton, joinButton);
+        createButton.setDisable(!sessionAvailable);
+        joinButton.setDisable(!sessionAvailable);
+
+        HBox actions = new HBox(
+                15,
+                createButton,
+                joinButton
+        );
         actions.setAlignment(Pos.CENTER);
 
-        VBox header = new VBox(10, title, subtitle, welcome);
+        VBox header = new VBox(
+                10,
+                title,
+                subtitle,
+                welcome
+        );
         header.setAlignment(Pos.CENTER);
 
-        VBox roomSection = new VBox(15, roomsLabel, roomsBox);
+        VBox roomSection = new VBox(
+                15,
+                roomsLabel,
+                informationLabel,
+                roomInfoLabel
+        );
         roomSection.setAlignment(Pos.CENTER);
 
         getChildren().addAll(
                 header,
                 roomSection,
                 actions,
-                testGameButton
+                connectionLabel
         );
 
         createButton.setOnAction(event -> {
+            if (!isSessionConnected()) {
+                showDisconnected(
+                        connectionLabel,
+                        createButton,
+                        joinButton
+                );
+                return;
+            }
 
-            CreateRoomView view = new CreateRoomView(username);
+            CreateRoomView view = new CreateRoomView(
+                    username,
+                    gameSession
+            );
 
             Scene scene = new Scene(view, 800, 500);
             applyTheme(scene);
 
-            Stage stage = (Stage) createButton.getScene().getWindow();
+            Stage stage = (Stage) getScene().getWindow();
             stage.setScene(scene);
             stage.setTitle("WordArena - Create Room");
         });
 
         joinButton.setOnAction(event -> {
+            if (!isSessionConnected()) {
+                showDisconnected(
+                        connectionLabel,
+                        createButton,
+                        joinButton
+                );
+                return;
+            }
 
-            JoinRoomView view = new JoinRoomView(username);
+            JoinRoomView view = new JoinRoomView(
+                    username,
+                    gameSession
+            );
 
             Scene scene = new Scene(view, 800, 500);
             applyTheme(scene);
 
-            Stage stage = (Stage) joinButton.getScene().getWindow();
+            Stage stage = (Stage) getScene().getWindow();
             stage.setScene(scene);
             stage.setTitle("WordArena - Join Room");
         });
+    }
 
-        testGameButton.setOnAction(event -> {
+    private boolean isSessionConnected() {
+        return gameSession != null
+                && gameSession.getTcpClient().isConnected();
+    }
 
-            GameView gameView = new GameView(username);
+    private void showDisconnected(
+            Label connectionLabel,
+            Button createButton,
+            Button joinButton
+    ) {
+        connectionLabel.setText(
+                "SERVER CONNECTION: DISCONNECTED"
+        );
 
-            ScrollPane scrollPane = new ScrollPane(gameView);
-            scrollPane.setFitToWidth(true);
+        createButton.setDisable(true);
+        joinButton.setDisable(true);
+    }
 
-            StackPane overlay = new StackPane(scrollPane);
-
-            Scene scene = new Scene(overlay, 800, 800);
-            applyTheme(scene);
-
-            Stage stage = (Stage) testGameButton.getScene().getWindow();
-            stage.setScene(scene);
-            stage.setTitle("WordArena - Game");
-        });
+    public GameSession getGameSession() {
+        return gameSession;
     }
 
     private void applyTheme(Scene scene) {
         scene.getStylesheets().add(
-                getClass().getResource("/css/wordarena.css").toExternalForm()
+                getClass()
+                        .getResource("/css/wordarena.css")
+                        .toExternalForm()
         );
     }
 }

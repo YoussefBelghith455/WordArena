@@ -1,7 +1,10 @@
 
 package com.wordarena.gui;
 
+import com.wordarena.client.tcp.GameSession;
+import com.wordarena.common.GameMessage;
 import com.wordarena.common.GameMode;
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -13,6 +16,8 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 public class WaitingRoomView extends VBox {
@@ -20,15 +25,27 @@ public class WaitingRoomView extends VBox {
     private final VBox playersList = new VBox(12);
     private final Label statusLabel = new Label();
     private final Button startButton = new Button("START GAME");
+    private final Button readyButton = new Button("READY");
+    private final Button leaveButton = new Button("LEAVE ROOM");
     private final Button chooseWordButton = new Button("CHOOSE SECRET WORD");
 
     private final String username;
     private final boolean isHost;
     private final String roomName;
     private final GameMode gameMode;
+    private final GameSession gameSession;
+    private final String roomId;
 
     private String opponentUsername = "Waiting for player...";
-    private boolean wordLocked = false;
+    private String hostPlayerId;
+    private boolean wordLocked;
+    private boolean ready;
+    private boolean readyRequestPending;
+    private boolean startRequestPending;
+    private boolean leaveRequestPending;
+    private boolean roundOpened;
+    private boolean allPlayersReady;
+    private boolean connected = true;
     private int playerCount = 1;
 
     public WaitingRoomView(
@@ -37,11 +54,23 @@ public class WaitingRoomView extends VBox {
             GameMode gameMode,
             boolean isHost
     ) {
+        this(username, roomName, gameMode, isHost, null, null);
+    }
 
+    public WaitingRoomView(
+            String username,
+            String roomName,
+            GameMode gameMode,
+            boolean isHost,
+            GameSession gameSession,
+            String roomId
+    ) {
         this.username = username;
         this.isHost = isHost;
         this.roomName = roomName;
         this.gameMode = gameMode;
+        this.gameSession = gameSession;
+        this.roomId = roomId;
 
         getStyleClass().add("waiting-room-root");
         setSpacing(24);
@@ -51,7 +80,9 @@ public class WaitingRoomView extends VBox {
         Label title = new Label("WAITING ROOM");
         title.getStyleClass().add("lobby-title");
 
-        Label roomLabel = new Label(roomName);
+        Label roomLabel = new Label(
+                roomId == null ? roomName : roomName + " [" + roomId + "]"
+        );
         roomLabel.getStyleClass().add("waiting-room-name");
 
         Label modeLabel = new Label("MODE: " + gameMode);
@@ -80,20 +111,25 @@ public class WaitingRoomView extends VBox {
         startButton.setManaged(isHost);
         startButton.setDisable(true);
 
+        readyButton.getStyleClass().add("neon-button");
+        readyButton.setPrefWidth(200);
+        readyButton.setVisible(gameSession != null);
+        readyButton.setManaged(gameSession != null);
+
         chooseWordButton.getStyleClass().add("neon-button");
         chooseWordButton.setPrefWidth(220);
 
         boolean doubleHost = gameMode == GameMode.DOUBLE_HOST;
-
         chooseWordButton.setVisible(doubleHost);
         chooseWordButton.setManaged(doubleHost);
+        chooseWordButton.setDisable(gameSession != null);
 
-        Button leaveButton = new Button("LEAVE ROOM");
         leaveButton.getStyleClass().add("secondary-button");
         leaveButton.setPrefWidth(200);
 
         HBox buttons = new HBox(
                 15,
+                readyButton,
                 startButton,
                 chooseWordButton,
                 leaveButton
@@ -109,18 +145,47 @@ public class WaitingRoomView extends VBox {
         );
 
         updatePlayers(List.of(username), isHost ? username : "");
-        updateStatus("Waiting for players to join...");
+
+        if (gameSession != null && roomId != null) {
+            updateStatus("Connected to room " + roomId);
+
+            gameSession.setMessageHandler(this::handleServerMessage);
+
+            gameSession.setErrorHandler(exception -> {
+                connected = false;
+                readyRequestPending = false;
+                startRequestPending = false;
+                leaveRequestPending = false;
+
+                readyButton.setDisable(true);
+                startButton.setDisable(true);
+                leaveButton.setDisable(true);
+
+                updateStatus(
+                        "Connection lost: " + exception.getMessage()
+                );
+            });
+        } else {
+            updateStatus("Waiting for players to join...");
+        }
+
+        readyButton.setOnAction(event -> setReady());
+        startButton.setOnAction(event -> startRound());
+        leaveButton.setOnAction(event -> leaveRoom());
 
         chooseWordButton.setOnAction(event -> {
+            if (gameSession != null) {
+                updateStatus(
+                        "Double Host gameplay is not integrated yet."
+                );
+                return;
+            }
 
             Stage stage = (Stage) chooseWordButton.getScene().getWindow();
-
             Scene waitingScene = chooseWordButton.getScene();
 
             DoubleHostWordView wordView = new DoubleHostWordView(secretWord -> {
-
                 wordLocked = true;
-
                 chooseWordButton.setDisable(true);
                 chooseWordButton.setText("WORD LOCKED");
 
@@ -145,52 +210,486 @@ public class WaitingRoomView extends VBox {
             stage.setScene(wordScene);
             stage.setTitle("WordArena - Double Host Word");
         });
+    }
 
-        startButton.setOnAction(event -> {
+    private void setReady() {
+        if (!connected
+                || gameSession == null
+                || roomId == null
+                || readyRequestPending
+                || startRequestPending
+                || leaveRequestPending
+                || roundOpened
+                || !gameSession.getTcpClient().isConnected()) {
+            return;
+        }
 
-            if (gameMode == GameMode.DOUBLE_HOST && !wordLocked) {
-                updateStatus("Choose and lock your secret word first.");
+        boolean requestedReady = !ready;
+
+        readyRequestPending = true;
+        readyButton.setDisable(true);
+
+        updateStatus(
+                requestedReady
+                        ? "Updating readiness to READY..."
+                        : "Updating readiness to NOT READY..."
+        );
+
+        Thread thread = new Thread(() -> {
+            try {
+                gameSession.send(
+                        "SET_READY",
+                        roomId,
+                        Boolean.toString(requestedReady)
+                );
+            } catch (IOException exception) {
+                Platform.runLater(() -> {
+                    readyRequestPending = false;
+
+                    readyButton.setDisable(
+                            !connected || leaveRequestPending
+                    );
+
+                    updateStatus(
+                            "Unable to update readiness: "
+                                    + exception.getMessage()
+                    );
+                });
+            }
+        });
+
+        thread.setName("wordarena-set-ready");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void startRound() {
+        if (!canStartRound()) {
+            return;
+        }
+
+        startRequestPending = true;
+
+        updateStartButton();
+
+        readyButton.setDisable(true);
+        leaveButton.setDisable(true);
+
+        updateStatus("Starting DUEL round...");
+
+        Thread thread = new Thread(() -> {
+            try {
+                gameSession.send("START_ROUND", roomId, "");
+            } catch (IOException exception) {
+                Platform.runLater(() -> {
+                    startRequestPending = false;
+
+                    readyButton.setDisable(!connected);
+                    leaveButton.setDisable(!connected);
+
+                    updateStartButton();
+
+                    updateStatus(
+                            "Unable to start round: "
+                                    + exception.getMessage()
+                    );
+                });
+            }
+        });
+
+        thread.setName("wordarena-start-round");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void leaveRoom() {
+        if (leaveRequestPending || startRequestPending || roundOpened) {
+            return;
+        }
+
+        if (gameSession == null || roomId == null) {
+            openLobby();
+            return;
+        }
+
+        if (!connected || !gameSession.getTcpClient().isConnected()) {
+            updateStatus(
+                    "Connection lost. Unable to leave room."
+            );
+            return;
+        }
+
+        leaveRequestPending = true;
+
+        leaveButton.setDisable(true);
+        readyButton.setDisable(true);
+        startButton.setDisable(true);
+
+        updateStatus("Leaving room...");
+
+        Thread thread = new Thread(() -> {
+            try {
+                gameSession.send("LEAVE_ROOM", roomId, "");
+            } catch (IOException exception) {
+                Platform.runLater(() -> {
+                    leaveRequestPending = false;
+
+                    leaveButton.setDisable(!connected);
+                    readyButton.setDisable(!connected);
+
+                    updateStartButton();
+
+                    updateStatus(
+                            "Unable to leave room: "
+                                    + exception.getMessage()
+                    );
+                });
+            }
+        });
+
+        thread.setName("wordarena-leave-room");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void handleServerMessage(GameMessage message) {
+
+        if ("ERROR".equals(message.getType())) {
+
+            String content = message.getContent();
+
+            if (content != null
+                    && content.startsWith("ROOM_NOT_FOUND|")
+                    && roomId != null
+                    && roomId.equals(message.getRoomId())) {
+
+                leaveRequestPending = false;
+                readyRequestPending = false;
+                startRequestPending = false;
+
+                returnToLobbyAfterLeaving();
                 return;
             }
 
-            GameView gameView = new GameView(
-                    username,
-                    opponentUsername,
-                    roomName,
-                    gameMode
-            );
+            if (leaveRequestPending) {
+                leaveRequestPending = false;
+                leaveButton.setDisable(!connected);
+            }
 
-            ScrollPane scrollPane = new ScrollPane(gameView);
-            scrollPane.setFitToWidth(true);
+            if (startRequestPending) {
+                startRequestPending = false;
+                leaveButton.setDisable(!connected);
+            }
 
-            StackPane overlay = new StackPane(scrollPane);
+            readyRequestPending = false;
+            readyButton.setDisable(!connected);
 
-            Scene scene = new Scene(overlay, 1100, 800);
-            applyTheme(scene);
+            updateStartButton();
 
-            Stage stage = (Stage) startButton.getScene().getWindow();
+            updateStatus("Server error: " + content);
+            return;
+        }
 
-            stage.setScene(scene);
-            stage.setTitle("WordArena - Game");
-        });
+        if ("OK".equals(message.getType()) && leaveRequestPending) {
 
-        leaveButton.setOnAction(event -> {
+            if (roomId != null
+                    && roomId.equals(message.getRoomId())
+                    && gameSession.getPlayerId().equals(message.getPlayerId())
+                    && "Successfully left the room.".equals(
+                    message.getContent()
+            )) {
 
-            LobbyView lobby = new LobbyView(username);
+                leaveRequestPending = false;
+                returnToLobbyAfterLeaving();
+            }
 
-            Scene scene = new Scene(lobby, 800, 600);
-            applyTheme(scene);
+            return;
+        }
 
-            Stage stage = (Stage) leaveButton.getScene().getWindow();
+        if (roomId == null || !roomId.equals(message.getRoomId())) {
+            return;
+        }
 
-            stage.setScene(scene);
-            stage.setTitle("WordArena - Lobby");
-        });
+        switch (message.getType()) {
+            case "ROOM_PLAYERS" ->
+                    handleRoomPlayers(message.getContent());
+
+            case "ROOM_STATE" ->
+                    handleRoomState(message.getContent());
+
+            case "ROUND_STATE" ->
+                    handleRoundState(message.getContent());
+
+            default -> {
+            }
+        }
     }
 
-    public void updatePlayers(List<String> players, String hostUsername) {
+    private void returnToLobbyAfterLeaving() {
+        if (gameSession != null) {
+            gameSession.clearRoom();
+            gameSession.setMessageHandler(null);
+            gameSession.setErrorHandler(null);
+        }
 
+        openLobby();
+    }
+
+    private void handleRoomPlayers(String content) {
+        if (content == null || content.isBlank()) {
+            updateStatus("Invalid ROOM_PLAYERS response.");
+            return;
+        }
+
+        String[] encodedPlayers = content.split(";", -1);
+
+        List<String> usernames = new ArrayList<>();
+        List<String> playerLabels = new ArrayList<>();
+
+        Boolean confirmedReady = null;
+        boolean everyoneReady = true;
+
+        for (String encodedPlayer : encodedPlayers) {
+
+            String[] fields = encodedPlayer.split("~", -1);
+
+            if (fields.length != 6) {
+                updateStatus("Invalid ROOM_PLAYERS response.");
+                return;
+            }
+
+            String playerId = fields[0];
+            String playerUsername = fields[1];
+
+            boolean playerReady =
+                    Boolean.parseBoolean(fields[2]);
+
+            everyoneReady = everyoneReady && playerReady;
+
+            usernames.add(playerUsername);
+
+            String displayText = playerUsername
+                    + (playerReady
+                    ? " (READY)"
+                    : " (NOT READY)");
+
+            if (playerId.equals(hostPlayerId)) {
+                displayText += " (HOST)";
+            }
+
+            playerLabels.add(displayText);
+
+            if (gameSession != null
+                    && playerId.equals(gameSession.getPlayerId())) {
+                confirmedReady = playerReady;
+            }
+        }
+
+        playerCount = usernames.size();
+        allPlayersReady = everyoneReady;
+
+        opponentUsername = usernames.stream()
+                .filter(player -> !player.equals(username))
+                .findFirst()
+                .orElse("Waiting for player...");
+
+        playersList.getChildren().clear();
+
+        for (String displayText : playerLabels) {
+            Label playerLabel = new Label(
+                    "●  " + displayText
+            );
+
+            playerLabel.getStyleClass().add("waiting-player");
+            playersList.getChildren().add(playerLabel);
+        }
+
+        if (playerCount < 2) {
+            Label emptySlot = new Label(
+                    "○  Waiting for another player..."
+            );
+
+            emptySlot.getStyleClass().add(
+                    "waiting-player-empty"
+            );
+
+            playersList.getChildren().add(emptySlot);
+        }
+
+        if (confirmedReady != null) {
+            ready = confirmedReady;
+            readyRequestPending = false;
+
+            readyButton.setText(
+                    ready ? "NOT READY" : "READY"
+            );
+
+            readyButton.setDisable(
+                    !connected
+                            || leaveRequestPending
+                            || startRequestPending
+                            || roundOpened
+            );
+        }
+
+        if (!leaveRequestPending) {
+            updateStatus(
+                    "Room " + roomId + " - "
+                            + playerCount + " player(s) connected."
+            );
+        }
+
+        updateStartButton();
+    }
+
+    private void handleRoomState(String content) {
+        if (content == null) {
+            return;
+        }
+
+        String[] fields = content.split("\\|", -1);
+
+        if (fields.length != 6) {
+            updateStatus("Invalid ROOM_STATE response.");
+            return;
+        }
+
+        hostPlayerId = fields[5];
+
+        try {
+            int currentPlayers =
+                    Integer.parseInt(fields[2]);
+
+            int maxPlayers =
+                    Integer.parseInt(fields[3]);
+
+            if (!leaveRequestPending) {
+                updateStatus(
+                        "Room " + roomId + " - "
+                                + currentPlayers + "/"
+                                + maxPlayers + " players."
+                );
+            }
+        } catch (NumberFormatException exception) {
+            updateStatus(
+                    "Invalid player count from server."
+            );
+        }
+    }
+
+    private void handleRoundState(String content) {
+        if (roundOpened
+                || leaveRequestPending
+                || content == null) {
+            return;
+        }
+
+        String[] fields = content.split("\\|", -1);
+
+        if (fields.length != 3
+                || !"ACTIVE".equals(fields[0])) {
+            return;
+        }
+
+        final int maxAttempts;
+
+        try {
+            maxAttempts = Integer.parseInt(fields[1]);
+            Long.parseLong(fields[2]);
+        } catch (NumberFormatException exception) {
+            updateStatus(
+                    "Invalid ROUND_STATE response."
+            );
+            return;
+        }
+
+        if (maxAttempts <= 0) {
+            updateStatus(
+                    "Invalid maximum attempts."
+            );
+            return;
+        }
+
+        roundOpened = true;
+        startRequestPending = false;
+
+        readyButton.setDisable(true);
+        startButton.setDisable(true);
+        leaveButton.setDisable(true);
+
+        DuelMultiplayerView gameView =
+                new DuelMultiplayerView(
+                        gameSession,
+                        roomId,
+                        roomName,
+                        opponentUsername,
+                        maxAttempts
+                );
+
+        ScrollPane scrollPane =
+                new ScrollPane(gameView);
+
+        scrollPane.setFitToWidth(true);
+
+        StackPane overlay =
+                new StackPane(scrollPane);
+
+        Scene scene = new Scene(
+                overlay,
+                1100,
+                800
+        );
+
+        applyTheme(scene);
+
+        Stage stage =
+                (Stage) getScene().getWindow();
+
+        stage.setScene(scene);
+        stage.setTitle(
+                "WordArena - Multiplayer DUEL"
+        );
+    }
+
+    private boolean canStartRound() {
+        return connected
+                && gameSession != null
+                && roomId != null
+                && gameMode == GameMode.DUEL
+                && isHost
+                && playerCount >= 2
+                && allPlayersReady
+                && !readyRequestPending
+                && !startRequestPending
+                && !leaveRequestPending
+                && !roundOpened
+                && gameSession.getTcpClient().isConnected();
+    }
+
+    private void updateStartButton() {
+        if (gameSession != null) {
+            startButton.setDisable(
+                    !canStartRound()
+            );
+            return;
+        }
+
+        boolean canStart =
+                isHost && playerCount >= 2;
+
+        if (gameMode == GameMode.DOUBLE_HOST) {
+            canStart = canStart && wordLocked;
+        }
+
+        startButton.setDisable(!canStart);
+    }
+
+    public void updatePlayers(
+            List<String> players,
+            String hostUsername
+    ) {
         playerCount = players.size();
+
         playersList.getChildren().clear();
 
         opponentUsername = players.stream()
@@ -200,42 +699,67 @@ public class WaitingRoomView extends VBox {
 
         for (String player : players) {
 
-            boolean playerIsHost = player.equals(hostUsername);
+            boolean playerIsHost =
+                    player.equals(hostUsername);
 
             Label playerLabel = new Label(
-                    "●  " + player + (playerIsHost ? " (HOST)" : "")
+                    "●  " + player
+                            + (playerIsHost
+                            ? " (HOST)"
+                            : "")
             );
 
-            playerLabel.getStyleClass().add("waiting-player");
-            playersList.getChildren().add(playerLabel);
+            playerLabel.getStyleClass().add(
+                    "waiting-player"
+            );
+
+            playersList.getChildren().add(
+                    playerLabel
+            );
         }
 
         if (players.size() < 2) {
-
             Label emptySlot = new Label(
                     "○  Waiting for another player..."
             );
 
-            emptySlot.getStyleClass().add("waiting-player-empty");
-            playersList.getChildren().add(emptySlot);
+            emptySlot.getStyleClass().add(
+                    "waiting-player-empty"
+            );
+
+            playersList.getChildren().add(
+                    emptySlot
+            );
         }
 
         updateStartButton();
     }
 
-    private void updateStartButton() {
-
-        boolean canStart = isHost && playerCount >= 2;
-
-        if (gameMode == GameMode.DOUBLE_HOST) {
-            canStart = canStart && wordLocked;
-        }
-
-        startButton.setDisable(!canStart);
-    }
-
     public void updateStatus(String status) {
         statusLabel.setText(status);
+    }
+
+    private void openLobby() {
+        LobbyView lobby = new LobbyView(
+                username,
+                gameSession
+        );
+
+        Scene scene = new Scene(
+                lobby,
+                800,
+                600
+        );
+
+        applyTheme(scene);
+
+        Stage stage =
+                (Stage) getScene().getWindow();
+
+        stage.setScene(scene);
+        stage.setTitle(
+                "WordArena - Lobby"
+        );
     }
 
     private void applyTheme(Scene scene) {
