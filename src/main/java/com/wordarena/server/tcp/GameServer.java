@@ -3,6 +3,8 @@ package com.wordarena.server.tcp;
 import com.wordarena.server.game.DuelGameService;
 import com.wordarena.server.game.RoomManager;
 import com.wordarena.server.game.WordBank;
+import com.wordarena.server.jms.GameEventNotifier;
+import com.wordarena.server.jms.ServerEventPublisher;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -19,8 +21,9 @@ public class GameServer {
     private final PlayerSessionRegistry sessionRegistry;
     private final RoomManager roomManager;
     private final ClientConnectionRegistry connectionRegistry;
-    private final WordBank wordBank;
     private final DuelGameService duelGameService;
+    private final ServerEventPublisher serverEventPublisher;
+    private final GameEventNotifier gameEventNotifier;
 
     public GameServer(int port) {
         this.port = port;
@@ -30,12 +33,20 @@ public class GameServer {
         this.connectionRegistry =
                 new ClientConnectionRegistry();
 
-        this.wordBank = new WordBank();
+        WordBank wordBank = new WordBank();
 
         this.duelGameService = new DuelGameService(
                 roomManager,
                 wordBank
         );
+
+        this.serverEventPublisher =
+                new ServerEventPublisher();
+
+        this.gameEventNotifier =
+                new GameEventNotifier(
+                        serverEventPublisher
+                );
     }
 
     public void start() {
@@ -43,9 +54,15 @@ public class GameServer {
                 "Starting WordArena TCP server..."
         );
 
-        try (ServerSocket serverSocket =
-                     new ServerSocket(port)) {
+        System.out.println(
+                "JMS publication enabled: "
+                        + gameEventNotifier.isEnabled()
+        );
 
+        try (
+                ServerSocket serverSocket =
+                        new ServerSocket(port)
+        ) {
             System.out.println(
                     "WordArena TCP server is listening on port "
                             + port
@@ -67,7 +84,8 @@ public class GameServer {
                                 sessionRegistry,
                                 roomManager,
                                 connectionRegistry,
-                                duelGameService
+                                duelGameService,
+                                gameEventNotifier
                         )
                 );
             }

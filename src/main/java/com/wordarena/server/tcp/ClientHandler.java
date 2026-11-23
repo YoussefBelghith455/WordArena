@@ -7,6 +7,7 @@ import com.wordarena.server.game.DuelRound;
 import com.wordarena.server.game.GamePlayer;
 import com.wordarena.server.game.GameRoom;
 import com.wordarena.server.game.RoomManager;
+import com.wordarena.server.jms.GameEventNotifier;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -34,6 +35,7 @@ public class ClientHandler implements Runnable {
     private final RoomManager roomManager;
     private final ClientConnectionRegistry connectionRegistry;
     private final DuelGameService duelGameService;
+    private final GameEventNotifier gameEventNotifier;
 
     private ObjectOutputStream output;
     private ObjectInputStream input;
@@ -44,13 +46,15 @@ public class ClientHandler implements Runnable {
             PlayerSessionRegistry sessionRegistry,
             RoomManager roomManager,
             ClientConnectionRegistry connectionRegistry,
-            DuelGameService duelGameService
+            DuelGameService duelGameService,
+            GameEventNotifier gameEventNotifier
     ) {
         this.clientSocket = clientSocket;
         this.sessionRegistry = sessionRegistry;
         this.roomManager = roomManager;
         this.connectionRegistry = connectionRegistry;
         this.duelGameService = duelGameService;
+        this.gameEventNotifier = gameEventNotifier;
     }
 
     @Override
@@ -303,6 +307,12 @@ public class ClientHandler implements Runnable {
         );
 
         broadcastRoomState(room);
+
+        gameEventNotifier.playerJoined(
+                room.getRoomId(),
+                session.playerId(),
+                session.username()
+        );
     }
 
     private void processJoinRoom(GameMessage message) {
@@ -324,6 +334,12 @@ public class ClientHandler implements Runnable {
         );
 
         broadcastRoomState(room);
+
+        gameEventNotifier.playerJoined(
+                room.getRoomId(),
+                session.playerId(),
+                session.username()
+        );
     }
 
     private void processLeaveRoom(GameMessage message)
@@ -332,6 +348,9 @@ public class ClientHandler implements Runnable {
         String roomId = requireRoomId(
                 message.getRoomId()
         );
+
+        PlayerSessionRegistry.PlayerSession session =
+                requireAuthenticatedSession();
 
         GameRoom room = roomManager.requireRoom(roomId);
 
@@ -353,6 +372,12 @@ public class ClientHandler implements Runnable {
                         roomId,
                         "Successfully left the room."
                 )
+        );
+
+        gameEventNotifier.playerLeft(
+                roomId,
+                session.playerId(),
+                session.username()
         );
 
         if (hostLeaving) {
@@ -392,6 +417,9 @@ public class ClientHandler implements Runnable {
                 message.getRoomId()
         );
 
+        PlayerSessionRegistry.PlayerSession session =
+                requireAuthenticatedSession();
+
         DuelRound duelRound =
                 duelGameService.startRound(
                         roomId,
@@ -415,6 +443,12 @@ public class ClientHandler implements Runnable {
         broadcastToRoom(
                 room,
                 roundStartedMessage
+        );
+
+        gameEventNotifier.roundStarted(
+                roomId,
+                session.playerId(),
+                session.username()
         );
     }
 
@@ -449,9 +483,15 @@ public class ClientHandler implements Runnable {
         );
 
         GameRoom room = roomManager.requireRoom(roomId);
+
         DuelRound duelRound =
                 duelGameService.requireActiveRound(
                         roomId
+                );
+
+        GamePlayer guessingPlayer =
+                room.requirePlayer(
+                        authenticatedPlayerId
                 );
 
         broadcastRoomState(room);
@@ -468,6 +508,21 @@ public class ClientHandler implements Runnable {
                 )
         );
 
+        if (outcome.evaluation().solved()) {
+            gameEventNotifier.playerSolved(
+                    roomId,
+                    guessingPlayer.getPlayerId(),
+                    guessingPlayer.getUsername()
+            );
+
+            gameEventNotifier.scoreUpdated(
+                    roomId,
+                    guessingPlayer.getPlayerId(),
+                    guessingPlayer.getUsername(),
+                    guessingPlayer.getScore()
+            );
+        }
+
         if (outcome.roundFinished()) {
             broadcastToRoom(
                     room,
@@ -479,6 +534,25 @@ public class ClientHandler implements Runnable {
                                     duelRound
                             )
                     )
+            );
+
+            String winnerPlayerId =
+                    duelRound.getWinnerPlayerId()
+                            .orElse("");
+
+            String winnerUsername = "";
+
+            if (!winnerPlayerId.isBlank()) {
+                winnerUsername =
+                        room.requirePlayer(
+                                winnerPlayerId
+                        ).getUsername();
+            }
+
+            gameEventNotifier.roundEnded(
+                    roomId,
+                    winnerPlayerId,
+                    winnerUsername
             );
         }
     }
@@ -741,6 +815,11 @@ public class ClientHandler implements Runnable {
         String disconnectedPlayerId =
                 authenticatedPlayerId;
 
+        PlayerSessionRegistry.PlayerSession session =
+                sessionRegistry.findByPlayerId(
+                        disconnectedPlayerId
+                ).orElse(null);
+
         roomManager.findRoomIdForPlayer(
                         disconnectedPlayerId
                 )
@@ -763,6 +842,14 @@ public class ClientHandler implements Runnable {
                     roomManager.removePlayerAfterDisconnect(
                             disconnectedPlayerId
                     );
+
+                    if (session != null) {
+                        gameEventNotifier.playerLeft(
+                                roomId,
+                                session.playerId(),
+                                session.username()
+                        );
+                    }
 
                     if (room != null && wasHost) {
                         notifyRoomClosed(
