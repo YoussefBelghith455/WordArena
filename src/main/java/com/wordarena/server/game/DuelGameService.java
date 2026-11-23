@@ -1,6 +1,8 @@
 package com.wordarena.server.game;
 
 import com.wordarena.common.GameMode;
+import com.wordarena.common.PlayerView;
+import com.wordarena.server.rmi.GameStatisticsService;
 
 import java.util.Objects;
 
@@ -8,10 +10,12 @@ public class DuelGameService {
 
     private final RoomManager roomManager;
     private final WordBank wordBank;
+    private final GameStatisticsService statisticsService;
 
     public DuelGameService(
             RoomManager roomManager,
-            WordBank wordBank
+            WordBank wordBank,
+            GameStatisticsService statisticsService
     ) {
         this.roomManager = Objects.requireNonNull(
                 roomManager,
@@ -22,13 +26,19 @@ public class DuelGameService {
                 wordBank,
                 "Word bank is required."
         );
+
+        this.statisticsService = Objects.requireNonNull(
+                statisticsService,
+                "Statistics service is required."
+        );
     }
 
     public DuelRound startRound(
             String roomId,
             String requestingPlayerId
     ) {
-        GameRoom room = roomManager.requireRoom(roomId);
+        GameRoom room =
+                roomManager.requireRoom(roomId);
 
         if (room.getGameMode() != GameMode.DUEL) {
             throw new IllegalStateException(
@@ -36,12 +46,16 @@ public class DuelGameService {
             );
         }
 
-        String secretWord = wordBank.selectRandomWord();
+        registerRoomPlayers(room);
 
-        DuelRound duelRound = room.startDuel(
-                requestingPlayerId,
-                secretWord
-        );
+        String secretWord =
+                wordBank.selectRandomWord();
+
+        DuelRound duelRound =
+                room.startDuel(
+                        requestingPlayerId,
+                        secretWord
+                );
 
         System.out.println(
                 "Duel round started in room "
@@ -57,7 +71,8 @@ public class DuelGameService {
             String playerId,
             String guessedWord
     ) {
-        GameRoom room = roomManager.requireRoom(roomId);
+        GameRoom room =
+                roomManager.requireRoom(roomId);
 
         if (room.getGameMode() != GameMode.DUEL) {
             throw new IllegalStateException(
@@ -71,16 +86,30 @@ public class DuelGameService {
             );
         }
 
-        return room.submitDuelGuess(
-                playerId,
-                guessedWord
-        );
+        DuelRound.GuessOutcome outcome =
+                room.submitDuelGuess(
+                        playerId,
+                        guessedWord
+                );
+
+        if (outcome.roundFinished()) {
+            DuelRound duelRound =
+                    requireActiveRound(roomId);
+
+            statisticsService.recordCompletedDuel(
+                    room,
+                    duelRound
+            );
+        }
+
+        return outcome;
     }
 
     public DuelRound requireActiveRound(
             String roomId
     ) {
-        GameRoom room = roomManager.requireRoom(roomId);
+        GameRoom room =
+                roomManager.requireRoom(roomId);
 
         return room.getDuelRound()
                 .orElseThrow(
@@ -88,5 +117,18 @@ public class DuelGameService {
                                 "The Duel round has not started."
                         )
                 );
+    }
+
+    private void registerRoomPlayers(
+            GameRoom room
+    ) {
+        for (PlayerView player :
+                room.getPlayerViews()) {
+
+            statisticsService.registerPlayer(
+                    player.getPlayerId(),
+                    player.getUsername()
+            );
+        }
     }
 }
