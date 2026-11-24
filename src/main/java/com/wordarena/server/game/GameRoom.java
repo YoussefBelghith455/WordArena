@@ -24,6 +24,7 @@ public class GameRoom {
 
     private boolean started;
     private DuelRound duelRound;
+    private CooperativeRound cooperativeRound;
 
     public GameRoom(
             String roomId,
@@ -169,15 +170,42 @@ public class GameRoom {
                 List.copyOf(players.values())
         );
 
+        cooperativeRound = null;
         started = true;
 
         return duelRound;
     }
 
-    public synchronized DuelRound.GuessOutcome submitDuelGuess(
+    public synchronized CooperativeRound startCooperative(
+            String requestingPlayerId,
+            String secretWord
+    ) {
+        if (gameMode != GameMode.COOPERATIVE) {
+            throw new IllegalStateException(
+                    "This room is not configured "
+                            + "for COOPERATIVE mode."
+            );
+        }
+
+        validateStartConditions(requestingPlayerId);
+
+        cooperativeRound = new CooperativeRound(
+                secretWord,
+                List.copyOf(players.values())
+        );
+
+        duelRound = null;
+        started = true;
+
+        return cooperativeRound;
+    }
+
+    public synchronized DuelRound.GuessOutcome
+    submitDuelGuess(
             String playerId,
             String guessedWord
     ) {
+
         if (!started || duelRound == null) {
             throw new IllegalStateException(
                     "The Duel round has not started."
@@ -190,8 +218,34 @@ public class GameRoom {
         );
     }
 
-    public synchronized Optional<DuelRound> getDuelRound() {
+    public synchronized CooperativeRound.GuessOutcome
+    submitCooperativeGuess(
+            String playerId,
+            String guessedWord
+    ) {
+
+        if (!started || cooperativeRound == null) {
+            throw new IllegalStateException(
+                    "The Cooperative round has not started."
+            );
+        }
+
+        return cooperativeRound.submitGuess(
+                playerId,
+                guessedWord
+        );
+    }
+
+    public synchronized Optional<DuelRound>
+    getDuelRound() {
+
         return Optional.ofNullable(duelRound);
+    }
+
+    public synchronized Optional<CooperativeRound>
+    getCooperativeRound() {
+
+        return Optional.ofNullable(cooperativeRound);
     }
 
     public synchronized Optional<GamePlayer> findPlayer(
@@ -201,7 +255,9 @@ public class GameRoom {
             return Optional.empty();
         }
 
-        return Optional.ofNullable(players.get(playerId));
+        return Optional.ofNullable(
+                players.get(playerId)
+        );
     }
 
     public synchronized GamePlayer requirePlayer(
@@ -209,7 +265,8 @@ public class GameRoom {
     ) {
         validatePlayerId(playerId);
 
-        GamePlayer player = players.get(playerId);
+        GamePlayer player =
+                players.get(playerId);
 
         if (player == null) {
             throw new IllegalStateException(
@@ -227,11 +284,15 @@ public class GameRoom {
                 && players.containsKey(playerId);
     }
 
-    public synchronized boolean isHost(String playerId) {
+    public synchronized boolean isHost(
+            String playerId
+    ) {
         return hostPlayerId.equals(playerId);
     }
 
-    public synchronized List<PlayerView> getPlayerViews() {
+    public synchronized List<PlayerView>
+    getPlayerViews() {
+
         return players.values()
                 .stream()
                 .map(GamePlayer::toPlayerView)
@@ -327,8 +388,13 @@ public class GameRoom {
         }
     }
 
-    private static void validatePlayerId(String playerId) {
-        requireText(playerId, "Player ID");
+    private static void validatePlayerId(
+            String playerId
+    ) {
+        requireText(
+                playerId,
+                "Player ID"
+        );
     }
 
     private static String requireText(

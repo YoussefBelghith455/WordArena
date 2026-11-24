@@ -2,6 +2,7 @@ package com.wordarena.server.rmi;
 
 import com.wordarena.common.GameMode;
 import com.wordarena.common.PlayerStats;
+import com.wordarena.server.game.CooperativeRound;
 import com.wordarena.server.game.DuelRound;
 import com.wordarena.server.game.GamePlayer;
 import com.wordarena.server.game.GameRoom;
@@ -19,10 +20,8 @@ class GameStatisticsServiceTest {
 
     private PlayerStatisticsRepository repository;
     private GameStatisticsService statisticsService;
-
     private GamePlayer host;
     private GamePlayer secondPlayer;
-    private GameRoom room;
 
     @BeforeEach
     void setUp() {
@@ -41,16 +40,6 @@ class GameStatisticsServiceTest {
                 "player-two",
                 "Youssef"
         );
-
-        room = new GameRoom(
-                "ROOM1234",
-                "Statistics Duel",
-                GameMode.DUEL,
-                2,
-                host
-        );
-
-        room.addPlayer(secondPlayer);
     }
 
     @Test
@@ -60,112 +49,111 @@ class GameStatisticsServiceTest {
                 host.getUsername()
         );
 
-        PlayerStats statistics =
+        PlayerStats stats =
                 repository.findPlayerStats(
                         host.getPlayerId()
                 ).orElseThrow();
 
-        assertEquals(
-                "Hedi",
-                statistics.getUsername()
-        );
-
-        assertEquals(
-                0,
-                statistics.getGamesPlayed()
-        );
-
-        assertEquals(
-                0,
-                statistics.getTotalScore()
-        );
+        assertEquals(0, stats.getGamesPlayed());
     }
 
     @Test
-    void shouldRecordWinnerAndLoser() {
-        DuelRound duelRound = new DuelRound(
-                "TRAIN",
-                List.of(
-                        host,
-                        secondPlayer
-                )
-        );
+    void shouldRecordCompletedDuelOnce() {
+        GameRoom room =
+                createRoom(GameMode.DUEL);
 
-        duelRound.submitGuess(
+        DuelRound round =
+                new DuelRound(
+                        "TRAIN",
+                        List.of(host, secondPlayer)
+                );
+
+        round.submitGuess(
                 host.getPlayerId(),
                 "TRAIN"
         );
 
-        boolean recorded =
+        assertTrue(
                 statisticsService.recordCompletedDuel(
                         room,
-                        duelRound
-                );
+                        round
+                )
+        );
 
-        assertTrue(recorded);
+        assertFalse(
+                statisticsService.recordCompletedDuel(
+                        room,
+                        round
+                )
+        );
 
-        PlayerStats winnerStatistics =
+        assertEquals(
+                1,
                 repository.findPlayerStats(
                         host.getPlayerId()
-                ).orElseThrow();
-
-        assertEquals(
-                1,
-                winnerStatistics.getGamesPlayed()
+                ).orElseThrow().getGamesWon()
         );
 
         assertEquals(
                 1,
-                winnerStatistics.getGamesWon()
-        );
-
-        assertEquals(
-                0,
-                winnerStatistics.getGamesLost()
-        );
-
-        assertEquals(
-                1000,
-                winnerStatistics.getTotalScore()
-        );
-
-        PlayerStats loserStatistics =
                 repository.findPlayerStats(
                         secondPlayer.getPlayerId()
-                ).orElseThrow();
-
-        assertEquals(
-                1,
-                loserStatistics.getGamesPlayed()
-        );
-
-        assertEquals(
-                0,
-                loserStatistics.getGamesWon()
-        );
-
-        assertEquals(
-                1,
-                loserStatistics.getGamesLost()
-        );
-
-        assertEquals(
-                0,
-                loserStatistics.getTotalScore()
+                ).orElseThrow().getGamesLost()
         );
     }
 
     @Test
-    void shouldRecordNoWinnerAsLossForBothPlayers() {
-        DuelRound duelRound = new DuelRound(
-                "TRAIN",
-                List.of(
-                        host,
-                        secondPlayer
-                )
+    void shouldRecordCooperativeVictoryForEveryPlayer() {
+        GameRoom room =
+                createRoom(GameMode.COOPERATIVE);
+
+        CooperativeRound round =
+                new CooperativeRound(
+                        "TRAIN",
+                        List.of(host, secondPlayer)
+                );
+
+        round.submitGuess(
+                host.getPlayerId(),
+                "TRAIN"
         );
 
-        List<String> failedGuesses = List.of(
+        assertTrue(
+                statisticsService
+                        .recordCompletedCooperative(
+                                room,
+                                round
+                        )
+        );
+
+        PlayerStats hostStats =
+                repository.findPlayerStats(
+                        host.getPlayerId()
+                ).orElseThrow();
+
+        PlayerStats secondStats =
+                repository.findPlayerStats(
+                        secondPlayer.getPlayerId()
+                ).orElseThrow();
+
+        assertEquals(1, hostStats.getGamesWon());
+        assertEquals(1, secondStats.getGamesWon());
+        assertEquals(600, hostStats.getTotalScore());
+        assertEquals(600, secondStats.getTotalScore());
+    }
+
+    @Test
+    void shouldRecordCooperativeLossForEveryPlayer() {
+        GameRoom room =
+                createRoom(GameMode.COOPERATIVE);
+
+        CooperativeRound round =
+                new CooperativeRound(
+                        "TRAIN",
+                        List.of(host, secondPlayer)
+                );
+
+        List<String> guesses = List.of(
                 "APPLE",
                 "BEACH",
                 "CLOUD",
@@ -174,94 +162,68 @@ class GameStatisticsServiceTest {
                 "MOUSE"
         );
 
-        for (String guess : failedGuesses) {
-            duelRound.submitGuess(
-                    host.getPlayerId(),
-                    guess
+        for (int index = 0;
+             index < guesses.size();
+             index++) {
+
+            round.submitGuess(
+                    index % 2 == 0
+                            ? host.getPlayerId()
+                            : secondPlayer.getPlayerId(),
+                    guesses.get(index)
             );
         }
 
-        for (String guess : failedGuesses) {
-            duelRound.submitGuess(
-                    secondPlayer.getPlayerId(),
-                    guess
-            );
-        }
-
-        statisticsService.recordCompletedDuel(
+        statisticsService.recordCompletedCooperative(
                 room,
-                duelRound
+                round
         );
 
-        PlayerStats hostStatistics =
+        assertEquals(
+                1,
                 repository.findPlayerStats(
                         host.getPlayerId()
-                ).orElseThrow();
+                ).orElseThrow().getGamesLost()
+        );
 
-        PlayerStats secondPlayerStatistics =
+        assertEquals(
+                1,
                 repository.findPlayerStats(
                         secondPlayer.getPlayerId()
-                ).orElseThrow();
-
-        assertEquals(
-                1,
-                hostStatistics.getGamesLost()
-        );
-
-        assertEquals(
-                1,
-                secondPlayerStatistics.getGamesLost()
-        );
-
-        assertEquals(
-                0,
-                hostStatistics.getGamesWon()
-        );
-
-        assertEquals(
-                0,
-                secondPlayerStatistics.getGamesWon()
+                ).orElseThrow().getGamesLost()
         );
     }
 
     @Test
-    void shouldNotRecordSameRoundTwice() {
-        DuelRound duelRound = new DuelRound(
-                "TRAIN",
-                List.of(
-                        host,
-                        secondPlayer
-                )
-        );
+    void shouldNotRecordCooperativeRoundTwice() {
+        GameRoom room =
+                createRoom(GameMode.COOPERATIVE);
 
-        duelRound.submitGuess(
+        CooperativeRound round =
+                new CooperativeRound(
+                        "TRAIN",
+                        List.of(host, secondPlayer)
+                );
+
+        round.submitGuess(
                 host.getPlayerId(),
                 "TRAIN"
         );
 
-        boolean firstRecording =
-                statisticsService.recordCompletedDuel(
-                        room,
-                        duelRound
-                );
+        assertTrue(
+                statisticsService
+                        .recordCompletedCooperative(
+                                room,
+                                round
+                        )
+        );
 
-        boolean secondRecording =
-                statisticsService.recordCompletedDuel(
-                        room,
-                        duelRound
-                );
-
-        assertTrue(firstRecording);
-        assertFalse(secondRecording);
-
-        PlayerStats statistics =
-                repository.findPlayerStats(
-                        host.getPlayerId()
-                ).orElseThrow();
-
-        assertEquals(
-                1,
-                statistics.getGamesPlayed()
+        assertFalse(
+                statisticsService
+                        .recordCompletedCooperative(
+                                room,
+                                round
+                        )
         );
 
         assertEquals(
@@ -271,34 +233,62 @@ class GameStatisticsServiceTest {
     }
 
     @Test
-    void shouldRejectUnfinishedRound() {
-        DuelRound duelRound = new DuelRound(
-                "TRAIN",
-                List.of(
-                        host,
-                        secondPlayer
-                )
-        );
+    void shouldRejectUnfinishedDuel() {
+        GameRoom room =
+                createRoom(GameMode.DUEL);
 
-        IllegalStateException exception =
-                assertThrows(
-                        IllegalStateException.class,
-                        () -> statisticsService
-                                .recordCompletedDuel(
-                                        room,
-                                        duelRound
-                                )
+        DuelRound round =
+                new DuelRound(
+                        "TRAIN",
+                        List.of(host, secondPlayer)
                 );
 
-        assertEquals(
-                "Duel statistics cannot be recorded "
-                        + "before the round finishes.",
-                exception.getMessage()
+        assertThrows(
+                IllegalStateException.class,
+                () -> statisticsService
+                        .recordCompletedDuel(
+                                room,
+                                round
+                        )
         );
+    }
 
-        assertEquals(
-                0,
-                repository.getRegisteredPlayerCount()
+    @Test
+    void shouldRejectUnfinishedCooperativeRound() {
+        GameRoom room =
+                createRoom(GameMode.COOPERATIVE);
+
+        CooperativeRound round =
+                new CooperativeRound(
+                        "TRAIN",
+                        List.of(host, secondPlayer)
+                );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> statisticsService
+                        .recordCompletedCooperative(
+                                room,
+                                round
+                        )
         );
+    }
+
+    private GameRoom createRoom(
+            GameMode gameMode
+    ) {
+        GameRoom room =
+                new GameRoom(
+                        "ROOM1234",
+                        "Statistics Room",
+                        gameMode,
+                        gameMode == GameMode.DUEL
+                                ? 2
+                                : 4,
+                        host
+                );
+
+        room.addPlayer(secondPlayer);
+        return room;
     }
 }

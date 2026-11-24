@@ -1,5 +1,6 @@
 package com.wordarena.server.tcp;
 
+import com.wordarena.server.game.CooperativeGameService;
 import com.wordarena.server.game.DuelGameService;
 import com.wordarena.server.game.RoomManager;
 import com.wordarena.server.game.WordBank;
@@ -26,14 +27,12 @@ public class GameServer {
     private final RoomManager roomManager;
     private final ClientConnectionRegistry connectionRegistry;
     private final DuelGameService duelGameService;
+    private final CooperativeGameService cooperativeGameService;
     private final GameEventNotifier gameEventNotifier;
-    private final PlayerStatisticsRepository statisticsRepository;
-    private final GameStatisticsService gameStatisticsService;
     private final RmiServiceManager rmiServiceManager;
 
     public GameServer(int port) {
         this.port = port;
-
         this.clientExecutor =
                 Executors.newCachedThreadPool();
 
@@ -46,10 +45,10 @@ public class GameServer {
         this.connectionRegistry =
                 new ClientConnectionRegistry();
 
-        this.statisticsRepository =
+        PlayerStatisticsRepository statisticsRepository =
                 new PlayerStatisticsRepository();
 
-        this.gameStatisticsService =
+        GameStatisticsService statisticsService =
                 new GameStatisticsService(
                         statisticsRepository
                 );
@@ -61,15 +60,19 @@ public class GameServer {
                 new DuelGameService(
                         roomManager,
                         wordBank,
-                        gameStatisticsService
+                        statisticsService
                 );
 
-        ServerEventPublisher serverEventPublisher =
-                new ServerEventPublisher();
+        this.cooperativeGameService =
+                new CooperativeGameService(
+                        roomManager,
+                        wordBank,
+                        statisticsService
+                );
 
         this.gameEventNotifier =
                 new GameEventNotifier(
-                        serverEventPublisher
+                        new ServerEventPublisher()
                 );
 
         this.rmiServiceManager =
@@ -90,7 +93,7 @@ public class GameServer {
         );
 
         try {
-            startRmiService();
+            rmiServiceManager.start();
         } catch (RemoteException exception) {
             System.err.println(
                     "Unable to start the RMI service: "
@@ -99,6 +102,13 @@ public class GameServer {
 
             return;
         }
+
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(
+                        rmiServiceManager::stop,
+                        "wordarena-rmi-shutdown"
+                )
+        );
 
         try (
                 ServerSocket serverSocket =
@@ -113,12 +123,6 @@ public class GameServer {
                 Socket clientSocket =
                         serverSocket.accept();
 
-                System.out.println(
-                        "Client connected: "
-                                + clientSocket
-                                .getRemoteSocketAddress()
-                );
-
                 clientExecutor.submit(
                         new ClientHandler(
                                 clientSocket,
@@ -126,6 +130,7 @@ public class GameServer {
                                 roomManager,
                                 connectionRegistry,
                                 duelGameService,
+                                cooperativeGameService,
                                 gameEventNotifier
                         )
                 );
@@ -136,36 +141,16 @@ public class GameServer {
                             + exception.getMessage()
             );
         } finally {
-            stopServices();
+            clientExecutor.shutdown();
+            rmiServiceManager.stop();
+
+            System.out.println(
+                    "WordArena server stopped."
+            );
         }
     }
 
-    private void startRmiService()
-            throws RemoteException {
-
-        rmiServiceManager.start();
-
-        Runtime.getRuntime().addShutdownHook(
-                new Thread(
-                        rmiServiceManager::stop,
-                        "wordarena-rmi-shutdown"
-                )
-        );
-    }
-
-    private void stopServices() {
-        clientExecutor.shutdown();
-        rmiServiceManager.stop();
-
-        System.out.println(
-                "WordArena server stopped."
-        );
-    }
-
     public static void main(String[] args) {
-        GameServer server =
-                new GameServer(DEFAULT_PORT);
-
-        server.start();
+        new GameServer(DEFAULT_PORT).start();
     }
 }

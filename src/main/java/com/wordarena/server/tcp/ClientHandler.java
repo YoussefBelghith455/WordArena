@@ -1,7 +1,10 @@
 package com.wordarena.server.tcp;
 
 import com.wordarena.common.GameMessage;
+import com.wordarena.common.GameMode;
 import com.wordarena.common.PlayerView;
+import com.wordarena.server.game.CooperativeGameService;
+import com.wordarena.server.game.CooperativeRound;
 import com.wordarena.server.game.DuelGameService;
 import com.wordarena.server.game.DuelRound;
 import com.wordarena.server.game.GamePlayer;
@@ -35,6 +38,7 @@ public class ClientHandler implements Runnable {
     private final RoomManager roomManager;
     private final ClientConnectionRegistry connectionRegistry;
     private final DuelGameService duelGameService;
+    private final CooperativeGameService cooperativeGameService;
     private final GameEventNotifier gameEventNotifier;
 
     private ObjectOutputStream output;
@@ -47,6 +51,7 @@ public class ClientHandler implements Runnable {
             RoomManager roomManager,
             ClientConnectionRegistry connectionRegistry,
             DuelGameService duelGameService,
+            CooperativeGameService cooperativeGameService,
             GameEventNotifier gameEventNotifier
     ) {
         this.clientSocket = clientSocket;
@@ -54,6 +59,8 @@ public class ClientHandler implements Runnable {
         this.roomManager = roomManager;
         this.connectionRegistry = connectionRegistry;
         this.duelGameService = duelGameService;
+        this.cooperativeGameService =
+                cooperativeGameService;
         this.gameEventNotifier = gameEventNotifier;
     }
 
@@ -76,12 +83,6 @@ public class ClientHandler implements Runnable {
                             )
             ) {
                 input = socketInput;
-
-                System.out.println(
-                        "Handling client on thread: "
-                                + Thread.currentThread().getName()
-                );
-
                 processMessages();
             }
         } catch (EOFException exception) {
@@ -102,7 +103,8 @@ public class ClientHandler implements Runnable {
     private void processMessages() throws IOException {
         while (!clientSocket.isClosed()) {
             try {
-                Object receivedObject = input.readObject();
+                Object receivedObject =
+                        input.readObject();
 
                 if (!(receivedObject
                         instanceof GameMessage message)) {
@@ -186,9 +188,7 @@ public class ClientHandler implements Runnable {
                                 + message.getType()
                 );
             }
-        } catch (
-                RoomProtocol.ProtocolException exception
-        ) {
+        } catch (RoomProtocol.ProtocolException exception) {
             sendMessage(
                     new GameMessage(
                             ERROR,
@@ -216,8 +216,7 @@ public class ClientHandler implements Runnable {
 
         if (authenticatedPlayerId != null) {
             sendProtocolError(
-                    RoomProtocol.ErrorCode
-                            .IDENTITY_MISMATCH,
+                    RoomProtocol.ErrorCode.IDENTITY_MISMATCH,
                     "This connection is already authenticated."
             );
 
@@ -249,21 +248,13 @@ public class ClientHandler implements Runnable {
         PlayerSessionRegistry.PlayerSession session =
                 result.session();
 
-        authenticatedPlayerId = session.playerId();
+        authenticatedPlayerId =
+                session.playerId();
 
-        try {
-            connectionRegistry.register(
-                    authenticatedPlayerId,
-                    this
-            );
-        } catch (RuntimeException exception) {
-            sessionRegistry.remove(
-                    authenticatedPlayerId
-            );
-
-            authenticatedPlayerId = null;
-            throw exception;
-        }
+        connectionRegistry.register(
+                authenticatedPlayerId,
+                this
+        );
 
         sendMessage(
                 new GameMessage(
@@ -275,17 +266,11 @@ public class ClientHandler implements Runnable {
                                 + "."
                 )
         );
-
-        System.out.println(
-                "Player logged in: "
-                        + session.username()
-                        + " ["
-                        + session.playerId()
-                        + "]"
-        );
     }
 
-    private void processCreateRoom(GameMessage message) {
+    private void processCreateRoom(
+            GameMessage message
+    ) {
         RoomProtocol.CreateRoomRequest request =
                 RoomProtocol.parseCreateRoom(
                         message.getContent()
@@ -294,17 +279,16 @@ public class ClientHandler implements Runnable {
         PlayerSessionRegistry.PlayerSession session =
                 requireAuthenticatedSession();
 
-        GamePlayer host = new GamePlayer(
-                session.playerId(),
-                session.username()
-        );
-
-        GameRoom room = roomManager.createRoom(
-                request.roomName(),
-                request.gameMode(),
-                request.maxPlayers(),
-                host
-        );
+        GameRoom room =
+                roomManager.createRoom(
+                        request.roomName(),
+                        request.gameMode(),
+                        request.maxPlayers(),
+                        new GamePlayer(
+                                session.playerId(),
+                                session.username()
+                        )
+                );
 
         broadcastRoomState(room);
 
@@ -316,48 +300,47 @@ public class ClientHandler implements Runnable {
     }
 
     private void processJoinRoom(GameMessage message) {
-        String roomId = requireRoomId(
-                message.getRoomId()
-        );
+        String roomId =
+                requireRoomId(message.getRoomId());
 
         PlayerSessionRegistry.PlayerSession session =
                 requireAuthenticatedSession();
 
-        GamePlayer player = new GamePlayer(
-                session.playerId(),
-                session.username()
-        );
-
-        GameRoom room = roomManager.joinRoom(
-                roomId,
-                player
-        );
+        GameRoom room =
+                roomManager.joinRoom(
+                        roomId,
+                        new GamePlayer(
+                                session.playerId(),
+                                session.username()
+                        )
+                );
 
         broadcastRoomState(room);
 
         gameEventNotifier.playerJoined(
-                room.getRoomId(),
+                roomId,
                 session.playerId(),
                 session.username()
         );
     }
 
-    private void processLeaveRoom(GameMessage message)
-            throws IOException {
+    private void processLeaveRoom(
+            GameMessage message
+    ) throws IOException {
 
-        String roomId = requireRoomId(
-                message.getRoomId()
-        );
+        String roomId =
+                requireRoomId(message.getRoomId());
 
         PlayerSessionRegistry.PlayerSession session =
                 requireAuthenticatedSession();
 
-        GameRoom room = roomManager.requireRoom(roomId);
+        GameRoom room =
+                roomManager.requireRoom(roomId);
 
         boolean hostLeaving =
                 room.isHost(authenticatedPlayerId);
 
-        List<String> playerIdsBeforeLeaving =
+        List<String> previousPlayerIds =
                 extractPlayerIds(room);
 
         roomManager.leaveRoom(
@@ -382,68 +365,94 @@ public class ClientHandler implements Runnable {
 
         if (hostLeaving) {
             notifyRoomClosed(
-                    playerIdsBeforeLeaving,
+                    previousPlayerIds,
                     roomId
             );
-
-            return;
+        } else {
+            roomManager.findRoom(roomId)
+                    .ifPresent(
+                            this::broadcastRoomState
+                    );
         }
-
-        roomManager.findRoom(roomId)
-                .ifPresent(this::broadcastRoomState);
     }
 
-    private void processSetReady(GameMessage message) {
-        String roomId = requireRoomId(
-                message.getRoomId()
-        );
+    private void processSetReady(
+            GameMessage message
+    ) {
+        String roomId =
+                requireRoomId(message.getRoomId());
 
-        boolean ready = RoomProtocol.parseReadyState(
-                message.getContent()
-        );
-
-        GameRoom room = roomManager.requireRoom(roomId);
+        GameRoom room =
+                roomManager.requireRoom(roomId);
 
         room.setPlayerReady(
                 authenticatedPlayerId,
-                ready
+                RoomProtocol.parseReadyState(
+                        message.getContent()
+                )
         );
 
         broadcastRoomState(room);
     }
 
-    private void processStartRound(GameMessage message) {
-        String roomId = requireRoomId(
-                message.getRoomId()
-        );
+    private void processStartRound(
+            GameMessage message
+    ) {
+        String roomId =
+                requireRoomId(message.getRoomId());
+
+        GameRoom room =
+                roomManager.requireRoom(roomId);
 
         PlayerSessionRegistry.PlayerSession session =
                 requireAuthenticatedSession();
 
-        DuelRound duelRound =
-                duelGameService.startRound(
-                        roomId,
-                        authenticatedPlayerId
-                );
+        if (room.getGameMode() == GameMode.DUEL) {
+            DuelRound round =
+                    duelGameService.startRound(
+                            roomId,
+                            authenticatedPlayerId
+                    );
 
-        GameRoom room = roomManager.requireRoom(roomId);
+            broadcastRoomState(room);
 
-        broadcastRoomState(room);
+            broadcastToRoom(
+                    room,
+                    new GameMessage(
+                            DuelProtocol.ROUND_STATE,
+                            "",
+                            roomId,
+                            DuelProtocol.encodeRoundStarted(
+                                    round
+                            )
+                    )
+            );
+        } else if (room.getGameMode()
+                == GameMode.COOPERATIVE) {
 
-        GameMessage roundStartedMessage =
-                new GameMessage(
-                        DuelProtocol.ROUND_STATE,
-                        "",
-                        roomId,
-                        DuelProtocol.encodeRoundStarted(
-                                duelRound
-                        )
-                );
+            CooperativeRound round =
+                    cooperativeGameService.startRound(
+                            roomId,
+                            authenticatedPlayerId
+                    );
 
-        broadcastToRoom(
-                room,
-                roundStartedMessage
-        );
+            broadcastRoomState(room);
+
+            broadcastToRoom(
+                    room,
+                    new GameMessage(
+                            CooperativeProtocol.ROUND_STATE,
+                            "",
+                            roomId,
+                            CooperativeProtocol
+                                    .encodeRoundStarted(round)
+                    )
+            );
+        } else {
+            throw new IllegalStateException(
+                    "This game mode is not implemented yet."
+            );
+        }
 
         gameEventNotifier.roundStarted(
                 roomId,
@@ -452,23 +461,53 @@ public class ClientHandler implements Runnable {
         );
     }
 
-    private void processGuess(GameMessage message)
-            throws IOException {
+    private void processGuess(
+            GameMessage message
+    ) throws IOException {
 
-        String roomId = requireRoomId(
-                message.getRoomId()
+        String roomId =
+                requireRoomId(message.getRoomId());
+
+        GameRoom room =
+                roomManager.requireRoom(roomId);
+
+        if (room.getGameMode() == GameMode.DUEL) {
+            processDuelGuess(
+                    room,
+                    message.getContent()
+            );
+
+            return;
+        }
+
+        if (room.getGameMode()
+                == GameMode.COOPERATIVE) {
+
+            processCooperativeGuess(
+                    room,
+                    message.getContent()
+            );
+
+            return;
+        }
+
+        throw new IllegalStateException(
+                "This game mode is not implemented yet."
         );
+    }
 
-        String guessedWord =
-                DuelProtocol.parseGuess(
-                        message.getContent()
-                );
+    private void processDuelGuess(
+            GameRoom room,
+            String content
+    ) throws IOException {
+
+        String roomId = room.getRoomId();
 
         DuelRound.GuessOutcome outcome =
                 duelGameService.submitGuess(
                         roomId,
                         authenticatedPlayerId,
-                        guessedWord
+                        DuelProtocol.parseGuess(content)
                 );
 
         sendMessage(
@@ -482,16 +521,9 @@ public class ClientHandler implements Runnable {
                 )
         );
 
-        GameRoom room = roomManager.requireRoom(roomId);
-
-        DuelRound duelRound =
+        DuelRound round =
                 duelGameService.requireActiveRound(
                         roomId
-                );
-
-        GamePlayer guessingPlayer =
-                room.requirePlayer(
-                        authenticatedPlayerId
                 );
 
         broadcastRoomState(room);
@@ -503,23 +535,28 @@ public class ClientHandler implements Runnable {
                         "",
                         roomId,
                         DuelProtocol.encodeRoundProgress(
-                                duelRound
+                                round
                         )
                 )
         );
 
+        GamePlayer player =
+                room.requirePlayer(
+                        authenticatedPlayerId
+                );
+
         if (outcome.evaluation().solved()) {
             gameEventNotifier.playerSolved(
                     roomId,
-                    guessingPlayer.getPlayerId(),
-                    guessingPlayer.getUsername()
+                    player.getPlayerId(),
+                    player.getUsername()
             );
 
             gameEventNotifier.scoreUpdated(
                     roomId,
-                    guessingPlayer.getPlayerId(),
-                    guessingPlayer.getUsername(),
-                    guessingPlayer.getScore()
+                    player.getPlayerId(),
+                    player.getUsername(),
+                    player.getScore()
             );
         }
 
@@ -530,29 +567,117 @@ public class ClientHandler implements Runnable {
                             DuelProtocol.GAME_OVER,
                             "",
                             roomId,
-                            DuelProtocol.encodeGameOver(
-                                    duelRound
-                            )
+                            DuelProtocol.encodeGameOver(round)
                     )
             );
 
-            String winnerPlayerId =
-                    duelRound.getWinnerPlayerId()
+            String winnerId =
+                    round.getWinnerPlayerId()
                             .orElse("");
 
-            String winnerUsername = "";
-
-            if (!winnerPlayerId.isBlank()) {
-                winnerUsername =
-                        room.requirePlayer(
-                                winnerPlayerId
-                        ).getUsername();
-            }
+            String winnerName =
+                    winnerId.isBlank()
+                            ? ""
+                            : room.requirePlayer(
+                            winnerId
+                    ).getUsername();
 
             gameEventNotifier.roundEnded(
                     roomId,
-                    winnerPlayerId,
-                    winnerUsername
+                    winnerId,
+                    winnerName
+            );
+        }
+    }
+
+    private void processCooperativeGuess(
+            GameRoom room,
+            String content
+    ) {
+        String roomId =
+                room.getRoomId();
+
+        CooperativeRound.GuessOutcome outcome =
+                cooperativeGameService.submitGuess(
+                        roomId,
+                        authenticatedPlayerId,
+                        CooperativeProtocol.parseGuess(
+                                content
+                        )
+                );
+
+        CooperativeRound round =
+                cooperativeGameService
+                        .requireActiveRound(roomId);
+
+        broadcastToRoom(
+                room,
+                new GameMessage(
+                        CooperativeProtocol.GUESS_RESULT,
+                        authenticatedPlayerId,
+                        roomId,
+                        CooperativeProtocol
+                                .encodeGuessResult(outcome)
+                )
+        );
+
+        broadcastRoomState(room);
+
+        broadcastToRoom(
+                room,
+                new GameMessage(
+                        CooperativeProtocol.ROUND_STATE,
+                        "",
+                        roomId,
+                        CooperativeProtocol
+                                .encodeRoundProgress(round)
+                )
+        );
+
+        if (outcome.solved()) {
+            GamePlayer solvingPlayer =
+                    room.requirePlayer(
+                            outcome.solvingPlayerId()
+                    );
+
+            gameEventNotifier.playerSolved(
+                    roomId,
+                    solvingPlayer.getPlayerId(),
+                    solvingPlayer.getUsername()
+            );
+
+            for (PlayerView player :
+                    room.getPlayerViews()) {
+
+                gameEventNotifier.scoreUpdated(
+                        roomId,
+                        player.getPlayerId(),
+                        player.getUsername(),
+                        player.getScore()
+                );
+            }
+        }
+
+        if (outcome.roundFinished()) {
+            broadcastToRoom(
+                    room,
+                    new GameMessage(
+                            CooperativeProtocol.GAME_OVER,
+                            "",
+                            roomId,
+                            CooperativeProtocol
+                                    .encodeGameOver(round)
+                    )
+            );
+
+            gameEventNotifier.roundEnded(
+                    roomId,
+                    outcome.solvingPlayerId(),
+                    outcome.solvingPlayerId().isBlank()
+                            ? ""
+                            : room.requirePlayer(
+                            outcome.solvingPlayerId()
+                    ).getUsername()
             );
         }
     }
@@ -577,8 +702,7 @@ public class ClientHandler implements Runnable {
         )) {
 
             throw RoomProtocol.protocolError(
-                    RoomProtocol.ErrorCode
-                            .IDENTITY_MISMATCH,
+                    RoomProtocol.ErrorCode.IDENTITY_MISMATCH,
                     "The supplied player ID does not "
                             + "match this connection."
             );
@@ -587,13 +711,6 @@ public class ClientHandler implements Runnable {
 
     private PlayerSessionRegistry.PlayerSession
     requireAuthenticatedSession() {
-
-        if (authenticatedPlayerId == null) {
-            throw RoomProtocol.protocolError(
-                    RoomProtocol.ErrorCode.UNAUTHENTICATED,
-                    "You must log in first."
-            );
-        }
 
         return sessionRegistry.findByPlayerId(
                         authenticatedPlayerId
@@ -620,16 +737,21 @@ public class ClientHandler implements Runnable {
         return roomId.trim();
     }
 
-    private void broadcastRoomState(GameRoom room) {
-        GameMessage roomStateMessage =
+    private void broadcastRoomState(
+            GameRoom room
+    ) {
+        broadcastToRoom(
+                room,
                 new GameMessage(
                         RoomProtocol.ROOM_STATE,
                         "",
                         room.getRoomId(),
                         RoomProtocol.encodeRoomState(room)
-                );
+                )
+        );
 
-        GameMessage roomPlayersMessage =
+        broadcastToRoom(
+                room,
                 new GameMessage(
                         RoomProtocol.ROOM_PLAYERS,
                         "",
@@ -637,31 +759,29 @@ public class ClientHandler implements Runnable {
                         RoomProtocol.encodeRoomPlayers(
                                 room.getPlayerViews()
                         )
-                );
-
-        broadcastToRoom(room, roomStateMessage);
-        broadcastToRoom(room, roomPlayersMessage);
+                )
+        );
     }
 
     private void broadcastToRoom(
             GameRoom room,
             GameMessage message
     ) {
-        for (PlayerView playerView :
+        for (PlayerView player :
                 room.getPlayerViews()) {
 
             connectionRegistry.sendToPlayer(
-                    playerView.getPlayerId(),
+                    player.getPlayerId(),
                     message
             );
         }
     }
 
     private void notifyRoomClosed(
-            List<String> previousPlayerIds,
+            List<String> playerIds,
             String roomId
     ) {
-        GameMessage roomClosedMessage =
+        GameMessage message =
                 new GameMessage(
                         ERROR,
                         "",
@@ -674,13 +794,13 @@ public class ClientHandler implements Runnable {
                         )
                 );
 
-        for (String playerId : previousPlayerIds) {
+        for (String playerId : playerIds) {
             if (!playerId.equals(
                     authenticatedPlayerId
             )) {
                 connectionRegistry.sendToPlayer(
                         playerId,
-                        roomClosedMessage
+                        message
                 );
             }
         }
@@ -689,17 +809,16 @@ public class ClientHandler implements Runnable {
     private List<String> extractPlayerIds(
             GameRoom room
     ) {
-        List<String> playerIds = new ArrayList<>();
+        List<String> ids =
+                new ArrayList<>();
 
-        for (PlayerView playerView :
+        for (PlayerView player :
                 room.getPlayerViews()) {
 
-            playerIds.add(
-                    playerView.getPlayerId()
-            );
+            ids.add(player.getPlayerId());
         }
 
-        return playerIds;
+        return ids;
     }
 
     private void sendDomainError(
@@ -707,72 +826,23 @@ public class ClientHandler implements Runnable {
             IllegalStateException exception
     ) throws IOException {
 
-        RoomProtocol.ErrorCode errorCode =
-                mapDomainError(exception.getMessage());
-
         sendMessage(
                 new GameMessage(
                         ERROR,
                         "",
                         safeRoomId(roomId),
                         RoomProtocol.encodeError(
-                                errorCode,
+                                RoomProtocol.ErrorCode
+                                        .INTERNAL_ERROR,
                                 exception.getMessage()
                         )
                 )
         );
     }
 
-    private RoomProtocol.ErrorCode mapDomainError(
-            String message
-    ) {
-        if (message == null) {
-            return RoomProtocol.ErrorCode.INTERNAL_ERROR;
-        }
-
-        return switch (message) {
-            case "Room not found." ->
-                    RoomProtocol.ErrorCode.ROOM_NOT_FOUND;
-
-            case "The room is full." ->
-                    RoomProtocol.ErrorCode.ROOM_FULL;
-
-            case "The player is already in another room.",
-                 "The player is already in this room." ->
-                    RoomProtocol.ErrorCode.ALREADY_IN_ROOM;
-
-            case "The player is not in this room.",
-                 "The player does not belong to this Duel round." ->
-                    RoomProtocol.ErrorCode.NOT_IN_ROOM;
-
-            case "Only the room host can start the game.",
-                 "Only the host can delete the room." ->
-                    RoomProtocol.ErrorCode.NOT_HOST;
-
-            case "Every player must be ready before starting." ->
-                    RoomProtocol.ErrorCode.PLAYERS_NOT_READY;
-
-            case "At least two players are required.",
-                 "The Duel round has not started.",
-                 "This room is not configured for DUEL mode." ->
-                    RoomProtocol.ErrorCode.ROOM_NOT_READY;
-
-            case "The game has already started.",
-                 "Cannot join a room after the game has started.",
-                 "Ready states cannot change after the game starts.",
-                 "The Duel round has already finished.",
-                 "This player has already solved the word.",
-                 "This player has no attempts remaining." ->
-                    RoomProtocol.ErrorCode.ROOM_ALREADY_STARTED;
-
-            default ->
-                    RoomProtocol.ErrorCode.INTERNAL_ERROR;
-        };
-    }
-
     private void sendProtocolError(
             RoomProtocol.ErrorCode errorCode,
-            String readableMessage
+            String message
     ) throws IOException {
 
         sendMessage(
@@ -782,7 +852,7 @@ public class ClientHandler implements Runnable {
                         "",
                         RoomProtocol.encodeError(
                                 errorCode,
-                                readableMessage
+                                message
                         )
                 )
         );
@@ -812,35 +882,31 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        String disconnectedPlayerId =
+        String playerId =
                 authenticatedPlayerId;
 
         PlayerSessionRegistry.PlayerSession session =
                 sessionRegistry.findByPlayerId(
-                        disconnectedPlayerId
+                        playerId
                 ).orElse(null);
 
-        roomManager.findRoomIdForPlayer(
-                        disconnectedPlayerId
-                )
+        roomManager.findRoomIdForPlayer(playerId)
                 .ifPresent(roomId -> {
                     GameRoom room =
                             roomManager.findRoom(roomId)
                                     .orElse(null);
 
-                    List<String> previousPlayerIds =
+                    List<String> previousIds =
                             room == null
                                     ? List.of()
                                     : extractPlayerIds(room);
 
                     boolean wasHost =
                             room != null
-                                    && room.isHost(
-                                    disconnectedPlayerId
-                            );
+                                    && room.isHost(playerId);
 
                     roomManager.removePlayerAfterDisconnect(
-                            disconnectedPlayerId
+                            playerId
                     );
 
                     if (session != null) {
@@ -853,7 +919,7 @@ public class ClientHandler implements Runnable {
 
                     if (room != null && wasHost) {
                         notifyRoomClosed(
-                                previousPlayerIds,
+                                previousIds,
                                 roomId
                         );
                     } else {
@@ -865,22 +931,11 @@ public class ClientHandler implements Runnable {
                 });
 
         connectionRegistry.remove(
-                disconnectedPlayerId,
+                playerId,
                 this
         );
 
-        boolean removed =
-                sessionRegistry.remove(
-                        disconnectedPlayerId
-                );
-
-        if (removed) {
-            System.out.println(
-                    "Player session removed: "
-                            + disconnectedPlayerId
-            );
-        }
-
+        sessionRegistry.remove(playerId);
         authenticatedPlayerId = null;
     }
 }
