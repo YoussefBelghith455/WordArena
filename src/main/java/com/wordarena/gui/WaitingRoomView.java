@@ -1,13 +1,16 @@
-
 package com.wordarena.gui;
 
 import com.wordarena.client.tcp.GameSession;
+import com.wordarena.client.tcp.HostGameController;
+import com.wordarena.client.tcp.DoubleHostGameController;
+import com.wordarena.client.tcp.CooperativeGameController;
 import com.wordarena.common.GameMessage;
 import com.wordarena.common.GameMode;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
+import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
@@ -39,6 +42,10 @@ public class WaitingRoomView extends VBox {
     private String opponentUsername = "Waiting for player...";
     private String hostPlayerId;
     private boolean wordLocked;
+    private HostWordView hostWordView;
+    private DoubleHostWordView doubleHostWordView;
+    private boolean bothWordsLocked;
+    private List<Node> waitingContent;
     private boolean ready;
     private boolean readyRequestPending;
     private boolean startRequestPending;
@@ -73,9 +80,9 @@ public class WaitingRoomView extends VBox {
         this.roomId = roomId;
 
         getStyleClass().add("waiting-room-root");
-        setSpacing(24);
+        setSpacing(16);
         setAlignment(Pos.CENTER);
-        setPadding(new Insets(35));
+        setPadding(new Insets(20));
 
         Label title = new Label("WAITING ROOM");
         title.getStyleClass().add("lobby-title");
@@ -120,9 +127,10 @@ public class WaitingRoomView extends VBox {
         chooseWordButton.setPrefWidth(220);
 
         boolean doubleHost = gameMode == GameMode.DOUBLE_HOST;
-        chooseWordButton.setVisible(doubleHost);
-        chooseWordButton.setManaged(doubleHost);
-        chooseWordButton.setDisable(gameSession != null);
+        boolean hostSelection = gameMode == GameMode.HOST && isHost && gameSession != null;
+        chooseWordButton.setVisible(doubleHost || hostSelection);
+        chooseWordButton.setManaged(doubleHost || hostSelection);
+        chooseWordButton.setDisable(gameSession != null && !hostSelection && !doubleHost);
 
         leaveButton.getStyleClass().add("secondary-button");
         leaveButton.setPrefWidth(200);
@@ -136,13 +144,29 @@ public class WaitingRoomView extends VBox {
         );
         buttons.setAlignment(Pos.CENTER);
 
-        getChildren().addAll(
-                title,
-                roomInfo,
-                playersBox,
-                statusLabel,
-                buttons
-        );
+        if (gameSession != null && roomId != null) {
+            JmsEventFeed jmsEventFeed = new JmsEventFeed(gameSession);
+            jmsEventFeed.setMaxWidth(340);
+
+            HBox roomContent = new HBox(20, playersBox, jmsEventFeed);
+            roomContent.setAlignment(Pos.CENTER);
+
+            getChildren().addAll(
+                    title,
+                    roomInfo,
+                    roomContent,
+                    statusLabel,
+                    buttons
+            );
+        } else {
+            getChildren().addAll(
+                    title,
+                    roomInfo,
+                    playersBox,
+                    statusLabel,
+                    buttons
+            );
+        }
 
         updatePlayers(List.of(username), isHost ? username : "");
 
@@ -153,6 +177,11 @@ public class WaitingRoomView extends VBox {
 
             gameSession.setErrorHandler(exception -> {
                 connected = false;
+                chooseWordButton.setDisable(true);
+                if (hostWordView != null) {
+                    closeHostWordView();
+                }
+                closeDoubleHostWordView();
                 readyRequestPending = false;
                 startRequestPending = false;
                 leaveRequestPending = false;
@@ -174,10 +203,12 @@ public class WaitingRoomView extends VBox {
         leaveButton.setOnAction(event -> leaveRoom());
 
         chooseWordButton.setOnAction(event -> {
+            if (gameMode == GameMode.HOST) {
+                openHostWordView();
+                return;
+            }
             if (gameSession != null) {
-                updateStatus(
-                        "Double Host gameplay is not integrated yet."
-                );
+                if (gameMode == GameMode.DOUBLE_HOST) openDoubleHostWordView();
                 return;
             }
 
@@ -210,6 +241,92 @@ public class WaitingRoomView extends VBox {
             stage.setScene(wordScene);
             stage.setTitle("WordArena - Double Host Word");
         });
+    }
+
+    private void openDoubleHostWordView() {
+        if (!connected || wordLocked || doubleHostWordView != null
+                || readyRequestPending || startRequestPending || leaveRequestPending
+                || roundOpened || gameSession == null
+                || !gameSession.getTcpClient().isConnected()) return;
+        waitingContent = new ArrayList<>(getChildren());
+        doubleHostWordView = new DoubleHostWordView(this::lockDoubleHostWord, this::closeDoubleHostWordView);
+        getChildren().setAll(doubleHostWordView);
+    }
+
+    private void closeDoubleHostWordView() {
+        if (doubleHostWordView == null) return;
+        doubleHostWordView = null;
+        getChildren().setAll(waitingContent);
+        waitingContent = null;
+        updateStartButton();
+    }
+
+    private void lockDoubleHostWord(String word) {
+        DoubleHostWordView view = doubleHostWordView;
+        if (view == null) return;
+        if (!connected || !gameSession.getTcpClient().isConnected()) {
+            view.showError("Connection unavailable.");
+            return;
+        }
+        Thread thread = new Thread(() -> {
+            try {
+                gameSession.send("LOCK_WORD", roomId, word);
+            } catch (IOException exception) {
+                Platform.runLater(() -> {
+                    if (doubleHostWordView == view && view.isSubmitting()) {
+                        view.showError("Unable to lock secret word.");
+                    }
+                });
+            }
+        }, "wordarena-lock-double-host-word");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void openHostWordView() {
+        if (!isHost || !connected || wordLocked || hostWordView != null
+                || readyRequestPending || startRequestPending || leaveRequestPending
+                || roundOpened || gameSession == null
+                || !gameSession.getTcpClient().isConnected()) {
+            return;
+        }
+        waitingContent = new ArrayList<>(getChildren());
+        hostWordView = new HostWordView(this::lockHostWord, this::closeHostWordView);
+        getChildren().setAll(hostWordView);
+    }
+
+    private void closeHostWordView() {
+        if (hostWordView == null) {
+            return;
+        }
+        hostWordView = null;
+        getChildren().setAll(waitingContent);
+        waitingContent = null;
+        updateStartButton();
+    }
+
+    private void lockHostWord(String word) {
+        HostWordView view = hostWordView;
+        if (view == null) {
+            return;
+        }
+        if (!connected || !gameSession.getTcpClient().isConnected()) {
+            view.showError("Connection unavailable.");
+            return;
+        }
+        Thread thread = new Thread(() -> {
+            try {
+                gameSession.send("LOCK_WORD", roomId, word);
+            } catch (IOException exception) {
+                Platform.runLater(() -> {
+                    if (hostWordView == view && view.isSubmitting()) {
+                        view.showError("Unable to lock secret word.");
+                    }
+                });
+            }
+        }, "wordarena-lock-host-word");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private void setReady() {
@@ -275,7 +392,7 @@ public class WaitingRoomView extends VBox {
         readyButton.setDisable(true);
         leaveButton.setDisable(true);
 
-        updateStatus("Starting DUEL round...");
+        updateStatus("Starting " + gameMode.name() + " round...");
 
         Thread thread = new Thread(() -> {
             try {
@@ -367,7 +484,23 @@ public class WaitingRoomView extends VBox {
                 readyRequestPending = false;
                 startRequestPending = false;
 
+                closeHostWordView();
+                closeDoubleHostWordView();
                 returnToLobbyAfterLeaving();
+                return;
+            }
+
+            if (doubleHostWordView != null && doubleHostWordView.isSubmitting()
+                    && (roomId.equals(message.getRoomId())
+                    || message.getRoomId() == null || message.getRoomId().isBlank())) {
+                doubleHostWordView.showError("Server rejected the secret word.");
+                return;
+            }
+
+            if (hostWordView != null && hostWordView.isSubmitting()
+                    && (roomId.equals(message.getRoomId())
+                    || message.getRoomId() == null || message.getRoomId().isBlank())) {
+                hostWordView.showError("Server rejected the secret word.");
                 return;
             }
 
@@ -411,6 +544,40 @@ public class WaitingRoomView extends VBox {
         }
 
         switch (message.getType()) {
+            case "WORD_LOCKED" -> {
+                if (gameMode == GameMode.DOUBLE_HOST) {
+                    String content = message.getContent();
+                    if ("DOUBLE_HOST|LOCKED|true".equals(content)
+                            || "DOUBLE_HOST|LOCKED|false".equals(content)) {
+                        if ("DOUBLE_HOST|LOCKED|true".equals(content)) bothWordsLocked = true;
+                        if (gameSession.getPlayerId().equals(message.getPlayerId())
+                                && doubleHostWordView != null && doubleHostWordView.isSubmitting()) {
+                            wordLocked = true;
+                            doubleHostWordView.showLocked();
+                            chooseWordButton.setText("WORD LOCKED");
+                            chooseWordButton.setDisable(true);
+                            closeDoubleHostWordView();
+                        }
+                        if (wordLocked) updateStatus(bothWordsLocked
+                                ? "Both secret words locked."
+                                : "Your word is locked. Waiting for opponent...");
+                        updateStartButton();
+                    }
+                    return;
+                }
+                if (gameMode == GameMode.HOST && isHost
+                        && hostWordView != null && hostWordView.isSubmitting()
+                        && gameSession.getPlayerId().equals(message.getPlayerId())
+                        && "HOST|LOCKED".equals(message.getContent())) {
+                    wordLocked = true;
+                    hostWordView.showLocked();
+                    chooseWordButton.setText("WORD LOCKED");
+                    chooseWordButton.setDisable(true);
+                    closeHostWordView();
+                    updateStatus("Secret word successfully locked.");
+                }
+            }
+
             case "ROOM_PLAYERS" ->
                     handleRoomPlayers(message.getContent());
 
@@ -486,6 +653,7 @@ public class WaitingRoomView extends VBox {
         }
 
         playerCount = usernames.size();
+        if (gameMode == GameMode.DOUBLE_HOST && playerCount < 2) bothWordsLocked = false;
         allPlayersReady = everyoneReady;
 
         opponentUsername = usernames.stream()
@@ -497,7 +665,7 @@ public class WaitingRoomView extends VBox {
 
         for (String displayText : playerLabels) {
             Label playerLabel = new Label(
-                    "●  " + displayText
+                    "\u25CF  " + displayText
             );
 
             playerLabel.getStyleClass().add("waiting-player");
@@ -506,7 +674,7 @@ public class WaitingRoomView extends VBox {
 
         if (playerCount < 2) {
             Label emptySlot = new Label(
-                    "○  Waiting for another player..."
+                    "\u25CB  Waiting for another player..."
             );
 
             emptySlot.getStyleClass().add(
@@ -584,6 +752,25 @@ public class WaitingRoomView extends VBox {
             return;
         }
 
+        if (gameMode == GameMode.HOST) {
+            openHostRound(content);
+            return;
+        }
+
+        if (gameMode == GameMode.DOUBLE_HOST) {
+            openDoubleHostRound(content);
+            return;
+        }
+
+        if (gameMode == GameMode.COOPERATIVE) {
+            openCooperativeRound(content);
+            return;
+        }
+
+        if (gameMode != GameMode.DUEL) {
+            return;
+        }
+
         String[] fields = content.split("\\|", -1);
 
         if (fields.length != 3
@@ -651,11 +838,171 @@ public class WaitingRoomView extends VBox {
         );
     }
 
+    private void openHostRound(String content) {
+        String[] fields = content.split("\\|", -1);
+
+        if (fields.length != 5
+                || !"HOST".equals(fields[0])
+                || !"ACTIVE".equals(fields[1])
+                || fields[3].isBlank()
+                || !fields[3].equals(hostPlayerId)) {
+            return;
+        }
+
+        final int maxAttempts;
+
+        try {
+            maxAttempts = Integer.parseInt(fields[2]);
+            Long.parseLong(fields[4]);
+        } catch (NumberFormatException exception) {
+            updateStatus("Invalid HOST ROUND_STATE response.");
+            return;
+        }
+
+        if (maxAttempts != 6 || getScene() == null
+                || !(getScene().getWindow() instanceof Stage stage)) {
+            return;
+        }
+
+        HostMultiplayerView gameView = new HostMultiplayerView(
+                gameSession, roomId, roomName,
+                gameSession.getPlayerId().equals(fields[3]), maxAttempts
+        );
+
+        HostGameController controller = new HostGameController(
+                gameSession, gameView
+        );
+
+        ScrollPane scrollPane = new ScrollPane(gameView);
+        scrollPane.setFitToWidth(true);
+        StackPane overlay = new StackPane(scrollPane);
+        Scene scene = new Scene(overlay, 1100, 800);
+        applyTheme(scene);
+
+        roundOpened = true;
+        startRequestPending = false;
+        readyButton.setDisable(true);
+        startButton.setDisable(true);
+        leaveButton.setDisable(true);
+        chooseWordButton.setDisable(true);
+
+        stage.setScene(scene);
+        stage.setTitle("WordArena - Multiplayer HOST");
+        controller.start();
+    }
+
+    private void openDoubleHostRound(String content) {
+        String[] fields = content.split("\\|", -1);
+
+        if (fields.length != 4
+                || !"DOUBLE_HOST".equals(fields[0])
+                || !"ACTIVE".equals(fields[1])) {
+            return;
+        }
+
+        final int maxAttempts;
+
+        try {
+            maxAttempts = Integer.parseInt(fields[2]);
+            Long.parseLong(fields[3]);
+        } catch (NumberFormatException exception) {
+            updateStatus("Invalid DOUBLE_HOST ROUND_STATE response.");
+            return;
+        }
+
+        if (maxAttempts != 6 || gameSession == null || getScene() == null
+                || !(getScene().getWindow() instanceof Stage stage)) {
+            return;
+        }
+
+        DoubleHostMultiplayerView gameView = new DoubleHostMultiplayerView(
+                gameSession, roomId, roomName, opponentUsername, maxAttempts
+        );
+
+        DoubleHostGameController controller = new DoubleHostGameController(
+                gameSession, gameView
+        );
+        controller.setResultHandler(gameView::showFinalResults);
+
+        ScrollPane scrollPane = new ScrollPane(gameView);
+        scrollPane.setFitToWidth(true);
+        StackPane overlay = new StackPane(scrollPane);
+        Scene scene = new Scene(overlay, 1100, 800);
+        applyTheme(scene);
+
+        roundOpened = true;
+        startRequestPending = false;
+        readyButton.setDisable(true);
+        startButton.setDisable(true);
+        leaveButton.setDisable(true);
+        chooseWordButton.setDisable(true);
+
+        stage.setScene(scene);
+        stage.setTitle("WordArena - Multiplayer DOUBLE HOST");
+        controller.start();
+    }
+
+    private void openCooperativeRound(String content) {
+        String[] fields = content.split("\\|", -1);
+
+        if (fields.length != 4
+                || !"COOPERATIVE".equals(fields[0])
+                || !"ACTIVE".equals(fields[1])) {
+            return;
+        }
+
+        final int maxAttempts;
+
+        try {
+            maxAttempts = Integer.parseInt(fields[2]);
+            Long.parseLong(fields[3]);
+        } catch (NumberFormatException exception) {
+            updateStatus("Invalid COOPERATIVE ROUND_STATE response.");
+            return;
+        }
+
+        if (maxAttempts != 6 || gameSession == null || getScene() == null
+                || !(getScene().getWindow() instanceof Stage stage)) {
+            return;
+        }
+
+        CooperativeMultiplayerView gameView = new CooperativeMultiplayerView(
+                gameSession, roomId, roomName, opponentUsername, maxAttempts
+        );
+
+        CooperativeGameController controller = new CooperativeGameController(
+                gameSession, gameView
+        );
+        controller.setResultHandler(gameView::showFinalResults);
+
+        ScrollPane scrollPane = new ScrollPane(gameView);
+        scrollPane.setFitToWidth(true);
+        StackPane overlay = new StackPane(scrollPane);
+        Scene scene = new Scene(overlay, 1100, 800);
+        applyTheme(scene);
+
+        roundOpened = true;
+        startRequestPending = false;
+        readyButton.setDisable(true);
+        startButton.setDisable(true);
+        leaveButton.setDisable(true);
+        chooseWordButton.setDisable(true);
+
+        stage.setScene(scene);
+        stage.setTitle("WordArena - Multiplayer COOPERATIVE");
+        controller.start();
+    }
+
     private boolean canStartRound() {
         return connected
                 && gameSession != null
                 && roomId != null
-                && gameMode == GameMode.DUEL
+                && (gameMode == GameMode.DUEL
+                || (gameMode == GameMode.COOPERATIVE && playerCount == 2)
+                || (gameMode == GameMode.HOST && wordLocked
+                && hostWordView == null)
+                || (gameMode == GameMode.DOUBLE_HOST && wordLocked
+                && bothWordsLocked && doubleHostWordView == null && playerCount == 2))
                 && isHost
                 && playerCount >= 2
                 && allPlayersReady
@@ -703,7 +1050,7 @@ public class WaitingRoomView extends VBox {
                     player.equals(hostUsername);
 
             Label playerLabel = new Label(
-                    "●  " + player
+                    "\u25CF  " + player
                             + (playerIsHost
                             ? " (HOST)"
                             : "")
@@ -720,7 +1067,7 @@ public class WaitingRoomView extends VBox {
 
         if (players.size() < 2) {
             Label emptySlot = new Label(
-                    "○  Waiting for another player..."
+                    "\u25CB  Waiting for another player..."
             );
 
             emptySlot.getStyleClass().add(

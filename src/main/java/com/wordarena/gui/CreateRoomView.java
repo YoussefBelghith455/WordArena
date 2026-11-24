@@ -1,4 +1,3 @@
-
 package com.wordarena.gui;
 
 import com.wordarena.client.tcp.GameSession;
@@ -53,7 +52,7 @@ public class CreateRoomView extends VBox {
         Label welcome = new Label("Player: " + username);
         welcome.getStyleClass().add("lobby-welcome");
 
-        modeSelector.getItems().add(GameMode.DUEL);
+        modeSelector.getItems().addAll(GameMode.DUEL, GameMode.HOST, GameMode.DOUBLE_HOST, GameMode.COOPERATIVE);
         modeSelector.setValue(GameMode.DUEL);
         modeSelector.setPrefWidth(300);
 

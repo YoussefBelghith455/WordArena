@@ -1,4 +1,3 @@
-
 package com.wordarena.gui;
 
 import javafx.geometry.Insets;
@@ -13,6 +12,8 @@ public class GameResultsView extends VBox {
     private final Label resultMessage = new Label();
     private final Label wordValue = new Label();
     private final Label attemptsValue = new Label();
+    private final Label attemptsLabel = new Label("YOUR ATTEMPTS");
+    private final Label hostSummary = new Label();
 
     private final Label playerName = new Label();
     private final Label playerScore = new Label();
@@ -43,7 +44,6 @@ public class GameResultsView extends VBox {
         wordBox.setAlignment(Pos.CENTER);
         wordBox.getStyleClass().add("game-results-stat");
 
-        Label attemptsLabel = new Label("YOUR ATTEMPTS");
         attemptsLabel.getStyleClass().add("game-results-label");
 
         attemptsValue.getStyleClass().add("game-results-value");
@@ -81,11 +81,17 @@ public class GameResultsView extends VBox {
                 opponentBox
         );
 
+        hostSummary.getStyleClass().add("game-results-label");
+        hostSummary.setWrapText(true);
+        hostSummary.setVisible(false);
+        hostSummary.setManaged(false);
+
         getChildren().addAll(
                 resultTitle,
                 resultMessage,
                 stats,
-                multiplayerStats
+                multiplayerStats,
+                hostSummary
         );
 
         showResult(false, "", 0);
@@ -120,6 +126,7 @@ public class GameResultsView extends VBox {
             String secretWord,
             int attempts
     ) {
+        resetHostSummary();
         resultTitle.setText("ROUND COMPLETED");
 
         resultMessage.setText(
@@ -146,6 +153,7 @@ public class GameResultsView extends VBox {
             int opponentFinalAttempts,
             int maxAttempts
     ) {
+        resetHostSummary();
         resultTitle.setText("DUEL COMPLETED");
 
         switch (result) {
@@ -163,7 +171,7 @@ public class GameResultsView extends VBox {
         );
 
         playerName.setText(
-                username + ("WIN".equals(result) ? " ★" : "")
+                username + ("WIN".equals(result) ? " â˜…" : "")
         );
 
         playerScore.setText(
@@ -176,7 +184,7 @@ public class GameResultsView extends VBox {
 
         opponentName.setText(
                 opponentUsername
-                        + ("LOSS".equals(result) ? " ★" : "")
+                        + ("LOSS".equals(result) ? " â˜…" : "")
         );
 
         opponentScore.setText(
@@ -192,6 +200,58 @@ public class GameResultsView extends VBox {
 
         multiplayerStats.setVisible(true);
         multiplayerStats.setManaged(true);
+    }
+
+    public void showHostResult(boolean host, boolean hostWon,
+                               String secretWord, int attempts, int maxAttempts) {
+        boolean won = host == hostWon;
+        resultTitle.setText("HOST MODE COMPLETED");
+        resultMessage.setText(won ? "VICTORY!" : "DEFEAT!");
+        updateResultStyle(won ? "WIN" : "LOSS");
+        wordValue.setText(secretWord);
+        attemptsLabel.setText("SHARED ATTEMPTS");
+        attemptsValue.setText(attempts + " / " + maxAttempts);
+        multiplayerStats.setVisible(false);
+        multiplayerStats.setManaged(false);
+        hostSummary.setText("Winning side: " + (hostWon ? "HOST" : "GUESSING TEAM")
+                + "\nPoints earned: +" + (won ? 600 : 0));
+        hostSummary.setVisible(true);
+        hostSummary.setManaged(true);
+    }
+
+    public void showDoubleHostResult(String result, String ownWord, String targetWord,
+                                     String username, int score, int attempts,
+                                     String opponentUsername, int opponentFinalScore,
+                                     int opponentFinalAttempts, int maxAttempts) {
+        showMultiplayerResult(result, targetWord, username, score, attempts,
+                opponentUsername, opponentFinalScore, opponentFinalAttempts, maxAttempts);
+        resultTitle.setText("DOUBLE HOST COMPLETED");
+        playerName.setText(username + " (YOU)");
+        opponentName.setText(opponentUsername);
+        hostSummary.setText("Your secret word: " + ownWord + "\nOpponent's secret word: " + targetWord);
+        hostSummary.setVisible(true);
+        hostSummary.setManaged(true);
+    }
+
+    public void showCooperativeResult(boolean won, String secretWord, int attempts, int maxAttempts) {
+        resetHostSummary();
+        resultTitle.setText("COOPERATIVE COMPLETED");
+        resultMessage.setText(won ? "TEAM VICTORY!" : "TEAM DEFEAT!");
+        updateResultStyle(won ? "WIN" : "LOSS");
+        wordValue.setText(secretWord);
+        attemptsLabel.setText("SHARED ATTEMPTS");
+        attemptsValue.setText(attempts + " / " + maxAttempts);
+        multiplayerStats.setVisible(false);
+        multiplayerStats.setManaged(false);
+        hostSummary.setText("Points earned per player: +" + (won ? 600 : 0));
+        hostSummary.setVisible(true);
+        hostSummary.setManaged(true);
+    }
+
+    private void resetHostSummary() {
+        attemptsLabel.setText("YOUR ATTEMPTS");
+        hostSummary.setVisible(false);
+        hostSummary.setManaged(false);
     }
 
     private void updateResultStyle(String result) {

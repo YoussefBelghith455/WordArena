@@ -1,4 +1,3 @@
-
 package com.wordarena.gui;
 
 import javafx.geometry.Insets;
@@ -14,10 +13,20 @@ import java.util.function.Consumer;
 public class DoubleHostWordView extends VBox {
 
     private final Label statusLabel = new Label();
-    private boolean wordLocked = false;
+    private boolean wordLocked;
+    private boolean submitting;
+    private final PasswordField secretField = new PasswordField();
+    private final TextField visibleField = new TextField();
+    private final Button revealButton = new Button("SHOW WORD");
+    private final Button confirmButton = new Button("LOCK SECRET WORD");
+    private final Button backButton = new Button("BACK");
 
     public DoubleHostWordView(Consumer<String> onWordConfirmed) {
 
+        this(onWordConfirmed, null);
+    }
+
+    public DoubleHostWordView(Consumer<String> onWordConfirmed, Runnable onBack) {
         getStyleClass().add("double-host-root");
         setAlignment(Pos.CENTER);
         setSpacing(20);
@@ -37,11 +46,9 @@ public class DoubleHostWordView extends VBox {
         instructions.setWrapText(true);
         instructions.setMaxWidth(400);
 
-        PasswordField secretField = new PasswordField();
         secretField.setPromptText("Enter secret word");
         secretField.setMaxWidth(300);
 
-        TextField visibleField = new TextField();
         visibleField.setPromptText("Enter secret word");
         visibleField.setMaxWidth(300);
 
@@ -52,7 +59,6 @@ public class DoubleHostWordView extends VBox {
         visibleField.setVisible(false);
         visibleField.setManaged(false);
 
-        Button revealButton = new Button("SHOW WORD");
         revealButton.getStyleClass().add("secondary-button");
         revealButton.setPrefWidth(160);
 
@@ -71,7 +77,6 @@ public class DoubleHostWordView extends VBox {
             );
         });
 
-        Button confirmButton = new Button("LOCK SECRET WORD");
         confirmButton.getStyleClass().add("neon-button");
         confirmButton.setPrefWidth(300);
 
@@ -80,13 +85,13 @@ public class DoubleHostWordView extends VBox {
 
         confirmButton.setOnAction(event -> {
 
-            if (wordLocked) {
+            if (wordLocked || submitting) {
                 return;
             }
 
             String word = secretField.getText()
                     .trim()
-                    .toUpperCase();
+                    .toUpperCase(java.util.Locale.ROOT);
 
             if (!word.matches("[A-Z]{5}")) {
                 statusLabel.setText(
@@ -95,23 +100,23 @@ public class DoubleHostWordView extends VBox {
                 return;
             }
 
-            wordLocked = true;
-
-            secretField.clear();
-            secretField.setDisable(true);
-            visibleField.setDisable(true);
-            revealButton.setDisable(true);
-            confirmButton.setDisable(true);
-
-            statusLabel.setText(
-                    "Secret word locked. Waiting for the other player..."
-            );
-
+            setSubmitting(true);
             if (onWordConfirmed != null) {
-                onWordConfirmed.accept(word);
+                try {
+                    onWordConfirmed.accept(word);
+                    if (onBack == null) showLocked();
+                } catch (RuntimeException exception) {
+                    showError("Unable to submit secret word.");
+                }
+            } else {
+                showError("No word submission handler.");
             }
         });
 
+        backButton.getStyleClass().add("secondary-button");
+        backButton.setVisible(onBack != null);
+        backButton.setManaged(onBack != null);
+        backButton.setOnAction(event -> { if (!submitting && onBack != null) onBack.run(); });
         getChildren().addAll(
                 title,
                 subtitle,
@@ -120,8 +125,33 @@ public class DoubleHostWordView extends VBox {
                 visibleField,
                 revealButton,
                 confirmButton,
-                statusLabel
+                statusLabel, backButton
         );
+    }
+
+    public boolean isSubmitting() { return submitting; }
+
+    public void setSubmitting(boolean value) {
+        submitting = value;
+        boolean disabled = value || wordLocked;
+        secretField.setDisable(disabled);
+        visibleField.setDisable(disabled);
+        revealButton.setDisable(disabled);
+        confirmButton.setDisable(disabled);
+        backButton.setDisable(value);
+        if (value) updateStatus("Waiting for server confirmation...");
+    }
+
+    public void showError(String message) {
+        setSubmitting(false);
+        updateStatus(message);
+    }
+
+    public void showLocked() {
+        wordLocked = true;
+        secretField.clear();
+        setSubmitting(false);
+        updateStatus("Secret word locked.");
     }
 
     public boolean isWordLocked() {

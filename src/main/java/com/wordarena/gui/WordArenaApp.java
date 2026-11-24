@@ -1,4 +1,3 @@
-
 package com.wordarena.gui;
 
 import com.wordarena.client.tcp.GameSession;
@@ -24,8 +23,9 @@ public class WordArenaApp extends Application {
 
     private Stage primaryStage;
     private GameTcpClient tcpClient;
-    private GameTcpClient pendingClient;
+    private volatile GameTcpClient pendingClient;
     private GameSession gameSession;
+    private volatile boolean closing;
 
     @Override
     public void start(Stage stage) {
@@ -64,10 +64,20 @@ public class WordArenaApp extends Application {
                 pendingClient = client;
 
                 try {
+
                     client.connect();
+
+                    if (closing) {
+                        closeClient(client);
+                        return;
+                    }
 
                     client.setMessageListener(response ->
                             Platform.runLater(() -> {
+
+                                if (closing || pendingClient != client) {
+                                    return;
+                                }
 
                                 if ("OK".equals(response.getType())) {
 
@@ -94,12 +104,20 @@ public class WordArenaApp extends Application {
                                             username
                                     );
 
+                                    gameSession.startJms();
+                                    gameSession.startRmi();
+
                                     LobbyView lobby = new LobbyView(
                                             username,
                                             gameSession
                                     );
 
-                                    Scene lobbyScene = new Scene(lobby, 800, 500);
+                                    Scene lobbyScene = new Scene(
+                                            lobby,
+                                            800,
+                                            500
+                                    );
+
                                     applyTheme(lobbyScene);
 
                                     stage.setScene(lobbyScene);
@@ -108,7 +126,8 @@ public class WordArenaApp extends Application {
                                 } else if ("ERROR".equals(response.getType())) {
 
                                     messageLabel.setText(
-                                            "Login failed: " + response.getContent()
+                                            "Login failed: "
+                                                    + response.getContent()
                                     );
 
                                     loginButton.setDisable(false);
@@ -121,6 +140,10 @@ public class WordArenaApp extends Application {
                     client.setErrorListener(exception ->
                             Platform.runLater(() -> {
 
+                                if (closing) {
+                                    return;
+                                }
+
                                 if (client == tcpClient) {
 
                                     System.err.println(
@@ -128,7 +151,7 @@ public class WordArenaApp extends Application {
                                                     + exception.getMessage()
                                     );
 
-                                } else {
+                                } else if (pendingClient == client) {
 
                                     messageLabel.setText(
                                             "Connection lost: "
@@ -137,6 +160,7 @@ public class WordArenaApp extends Application {
 
                                     loginButton.setDisable(false);
                                     pendingClient = null;
+                                    closeClient(client);
                                 }
                             })
                     );
@@ -155,9 +179,14 @@ public class WordArenaApp extends Application {
                 } catch (IOException exception) {
 
                     closeClient(client);
-                    pendingClient = null;
 
                     Platform.runLater(() -> {
+
+                        if (closing || pendingClient != client) {
+                            return;
+                        }
+
+                        pendingClient = null;
 
                         messageLabel.setText(
                                 "Cannot connect to server: "
@@ -172,6 +201,12 @@ public class WordArenaApp extends Application {
             loginThread.setName("wordarena-login-thread");
             loginThread.setDaemon(true);
             loginThread.start();
+        });
+
+        usernameField.setOnAction(event -> {
+            if (!loginButton.isDisabled()) {
+                loginButton.fire();
+            }
         });
 
         VBox root = new VBox(
@@ -223,6 +258,12 @@ public class WordArenaApp extends Application {
 
     private void closeApplication() {
 
+        if (closing) {
+            return;
+        }
+
+        closing = true;
+
         if (primaryStage != null) {
 
             Scene scene = primaryStage.getScene();
@@ -230,6 +271,11 @@ public class WordArenaApp extends Application {
             if (scene != null) {
                 shutdownGameViews(scene.getRoot());
             }
+        }
+
+        if (gameSession != null) {
+            gameSession.closeRmi();
+            gameSession.closeJms();
         }
 
         closeClient(tcpClient);

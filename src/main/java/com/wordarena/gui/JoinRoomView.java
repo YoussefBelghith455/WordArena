@@ -1,4 +1,3 @@
-
 package com.wordarena.gui;
 
 import com.wordarena.client.tcp.GameSession;
@@ -27,14 +26,23 @@ public class JoinRoomView extends VBox {
     private final Button backButton = new Button("BACK TO LOBBY");
 
     private boolean joiningRoom;
+    private boolean automaticJoinTriggered;
 
     public JoinRoomView(String username) {
-        this(username, null);
+        this(username, null, null);
     }
 
     public JoinRoomView(
             String username,
             GameSession gameSession
+    ) {
+        this(username, gameSession, null);
+    }
+
+    public JoinRoomView(
+            String username,
+            GameSession gameSession,
+            String selectedRoomId
     ) {
         this.username = username;
         this.gameSession = gameSession;
@@ -86,7 +94,39 @@ public class JoinRoomView extends VBox {
 
         joinButton.setOnAction(event -> joinRoom());
 
+        roomIdField.setOnAction(event -> joinRoom());
+
         backButton.setOnAction(event -> returnToLobby());
+
+        if (selectedRoomId != null
+                && !selectedRoomId.isBlank()) {
+
+            roomIdField.setText(selectedRoomId.trim());
+
+            sceneProperty().addListener(
+                    (observable, oldScene, newScene) -> {
+
+                        if (newScene != null
+                                && !automaticJoinTriggered) {
+
+                            automaticJoinTriggered = true;
+
+                            Platform.runLater(() -> {
+
+                                if (getScene() != null
+                                        && getScene().getWindow() != null) {
+
+                                    joinRoom();
+
+                                } else {
+
+                                    automaticJoinTriggered = false;
+                                }
+                            });
+                        }
+                    }
+            );
+        }
     }
 
     private void joinRoom() {
@@ -98,14 +138,20 @@ public class JoinRoomView extends VBox {
         String roomId = roomIdField.getText().trim();
 
         if (roomId.isEmpty()) {
-            messageLabel.setText("Please enter a room ID.");
+
+            messageLabel.setText(
+                    "Please enter a room ID."
+            );
+
             return;
         }
 
         if (!isConnected()) {
+
             messageLabel.setText(
                     "No authenticated server connection."
             );
+
             return;
         }
 
@@ -121,23 +167,33 @@ public class JoinRoomView extends VBox {
         );
 
         gameSession.setErrorHandler(exception -> {
+
             joiningRoom = false;
-            setControlsDisabled(true);
+
+            joinButton.setDisable(true);
+            roomIdField.setDisable(true);
+            backButton.setDisable(false);
 
             messageLabel.setText(
-                    "Connection error: " + exception.getMessage()
+                    "Connection error: "
+                            + exception.getMessage()
             );
         });
 
         Thread joinThread = new Thread(() -> {
+
             try {
+
                 gameSession.send(
                         "JOIN_ROOM",
                         roomId,
                         ""
                 );
+
             } catch (IOException exception) {
+
                 Platform.runLater(() -> {
+
                     resetControls();
 
                     messageLabel.setText(
@@ -146,7 +202,10 @@ public class JoinRoomView extends VBox {
                     );
 
                     if (!isConnected()) {
-                        setControlsDisabled(true);
+
+                        joinButton.setDisable(true);
+                        roomIdField.setDisable(true);
+                        backButton.setDisable(false);
                     }
                 });
             }
@@ -167,12 +226,14 @@ public class JoinRoomView extends VBox {
         }
 
         if ("ERROR".equals(response.getType())) {
+
             resetControls();
 
             messageLabel.setText(
                     "Unable to join room: "
                             + response.getContent()
             );
+
             return;
         }
 
@@ -187,32 +248,43 @@ public class JoinRoomView extends VBox {
         String content = response.getContent();
 
         if (content == null) {
+
             resetControls();
+
             messageLabel.setText(
                     "Invalid room state from server."
             );
+
             return;
         }
 
         String[] fields = content.split("\\|", -1);
 
         if (fields.length != 6) {
+
             resetControls();
+
             messageLabel.setText(
                     "Invalid room state from server."
             );
+
             return;
         }
 
         GameMode mode;
 
         try {
+
             mode = GameMode.valueOf(fields[1]);
+
         } catch (IllegalArgumentException exception) {
+
             resetControls();
+
             messageLabel.setText(
                     "Unknown game mode from server."
             );
+
             return;
         }
 
@@ -246,17 +318,20 @@ public class JoinRoomView extends VBox {
     }
 
     private boolean isConnected() {
+
         return gameSession != null
                 && gameSession.getTcpClient().isConnected();
     }
 
     private void setControlsDisabled(boolean disabled) {
+
         joinButton.setDisable(disabled);
         roomIdField.setDisable(disabled);
         backButton.setDisable(disabled);
     }
 
     private void resetControls() {
+
         joiningRoom = false;
         setControlsDisabled(false);
     }
@@ -268,6 +343,7 @@ public class JoinRoomView extends VBox {
         }
 
         if (gameSession != null) {
+
             gameSession.setMessageHandler(null);
             gameSession.setErrorHandler(null);
         }
@@ -287,6 +363,7 @@ public class JoinRoomView extends VBox {
     }
 
     private void applyTheme(Scene scene) {
+
         scene.getStylesheets().add(
                 getClass()
                         .getResource("/css/wordarena.css")

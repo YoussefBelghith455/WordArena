@@ -1,4 +1,3 @@
-
 package com.wordarena.gui;
 
 import com.wordarena.client.tcp.GameSession;
@@ -113,11 +112,20 @@ public class DuelMultiplayerView extends VBox {
             }
         }
 
+        JmsEventFeed jmsEventFeed = new JmsEventFeed(gameSession);
+
+        VBox eventsPanel = new VBox(
+                10,
+                eventFeed,
+                jmsEventFeed
+        );
+        eventsPanel.setAlignment(Pos.TOP_CENTER);
+
         HBox gameLayout = new HBox(
                 20,
                 playerPanel,
                 grid,
-                eventFeed
+                eventsPanel
         );
         gameLayout.setAlignment(Pos.CENTER);
 
