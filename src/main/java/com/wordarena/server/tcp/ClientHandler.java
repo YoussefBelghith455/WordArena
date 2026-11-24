@@ -9,6 +9,8 @@ import com.wordarena.server.game.DuelGameService;
 import com.wordarena.server.game.DuelRound;
 import com.wordarena.server.game.GamePlayer;
 import com.wordarena.server.game.GameRoom;
+import com.wordarena.server.game.HostGameService;
+import com.wordarena.server.game.HostRound;
 import com.wordarena.server.game.RoomManager;
 import com.wordarena.server.jms.GameEventNotifier;
 
@@ -29,6 +31,7 @@ public class ClientHandler implements Runnable {
     private static final String SET_READY = "SET_READY";
     private static final String START_ROUND = "START_ROUND";
     private static final String GUESS = "GUESS";
+    private static final String LOCK_WORD = "LOCK_WORD";
 
     private static final String OK = "OK";
     private static final String ERROR = "ERROR";
@@ -39,6 +42,7 @@ public class ClientHandler implements Runnable {
     private final ClientConnectionRegistry connectionRegistry;
     private final DuelGameService duelGameService;
     private final CooperativeGameService cooperativeGameService;
+    private final HostGameService hostGameService;
     private final GameEventNotifier gameEventNotifier;
 
     private ObjectOutputStream output;
@@ -52,6 +56,7 @@ public class ClientHandler implements Runnable {
             ClientConnectionRegistry connectionRegistry,
             DuelGameService duelGameService,
             CooperativeGameService cooperativeGameService,
+            HostGameService hostGameService,
             GameEventNotifier gameEventNotifier
     ) {
         this.clientSocket = clientSocket;
@@ -61,6 +66,7 @@ public class ClientHandler implements Runnable {
         this.duelGameService = duelGameService;
         this.cooperativeGameService =
                 cooperativeGameService;
+        this.hostGameService = hostGameService;
         this.gameEventNotifier = gameEventNotifier;
     }
 
@@ -103,12 +109,9 @@ public class ClientHandler implements Runnable {
     private void processMessages() throws IOException {
         while (!clientSocket.isClosed()) {
             try {
-                Object receivedObject =
-                        input.readObject();
+                Object object = input.readObject();
 
-                if (!(receivedObject
-                        instanceof GameMessage message)) {
-
+                if (!(object instanceof GameMessage message)) {
                     sendProtocolError(
                             RoomProtocol.ErrorCode
                                     .INVALID_REQUEST_FORMAT,
@@ -131,8 +134,9 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    private void processMessage(GameMessage message)
-            throws IOException {
+    private void processMessage(
+            GameMessage message
+    ) throws IOException {
 
         if (message.getType() == null
                 || message.getType().isBlank()) {
@@ -169,6 +173,11 @@ public class ClientHandler implements Runnable {
                 case SET_READY -> {
                     requireAuthenticatedRequest(message);
                     processSetReady(message);
+                }
+
+                case LOCK_WORD -> {
+                    requireAuthenticatedRequest(message);
+                    processLockWord(message);
                 }
 
                 case START_ROUND -> {
@@ -211,8 +220,9 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    private void processLogin(GameMessage message)
-            throws IOException {
+    private void processLogin(
+            GameMessage message
+    ) throws IOException {
 
         if (authenticatedPlayerId != null) {
             sendProtocolError(
@@ -299,7 +309,9 @@ public class ClientHandler implements Runnable {
         );
     }
 
-    private void processJoinRoom(GameMessage message) {
+    private void processJoinRoom(
+            GameMessage message
+    ) {
         String roomId =
                 requireRoomId(message.getRoomId());
 
@@ -340,7 +352,7 @@ public class ClientHandler implements Runnable {
         boolean hostLeaving =
                 room.isHost(authenticatedPlayerId);
 
-        List<String> previousPlayerIds =
+        List<String> previousIds =
                 extractPlayerIds(room);
 
         roomManager.leaveRoom(
@@ -365,7 +377,7 @@ public class ClientHandler implements Runnable {
 
         if (hostLeaving) {
             notifyRoomClosed(
-                    previousPlayerIds,
+                    previousIds,
                     roomId
             );
         } else {
@@ -395,6 +407,31 @@ public class ClientHandler implements Runnable {
         broadcastRoomState(room);
     }
 
+    private void processLockWord(
+            GameMessage message
+    ) throws IOException {
+
+        String roomId =
+                requireRoomId(message.getRoomId());
+
+        hostGameService.lockSecretWord(
+                roomId,
+                authenticatedPlayerId,
+                HostProtocol.parseSecretWord(
+                        message.getContent()
+                )
+        );
+
+        sendMessage(
+                new GameMessage(
+                        HostProtocol.WORD_LOCKED,
+                        authenticatedPlayerId,
+                        roomId,
+                        HostProtocol.encodeWordLocked()
+                )
+        );
+    }
+
     private void processStartRound(
             GameMessage message
     ) {
@@ -407,6 +444,8 @@ public class ClientHandler implements Runnable {
         PlayerSessionRegistry.PlayerSession session =
                 requireAuthenticatedSession();
 
+        GameMessage roundStarted;
+
         if (room.getGameMode() == GameMode.DUEL) {
             DuelRound round =
                     duelGameService.startRound(
@@ -414,17 +453,12 @@ public class ClientHandler implements Runnable {
                             authenticatedPlayerId
                     );
 
-            broadcastRoomState(room);
-
-            broadcastToRoom(
-                    room,
-                    new GameMessage(
-                            DuelProtocol.ROUND_STATE,
-                            "",
-                            roomId,
-                            DuelProtocol.encodeRoundStarted(
-                                    round
-                            )
+            roundStarted = new GameMessage(
+                    DuelProtocol.ROUND_STATE,
+                    "",
+                    roomId,
+                    DuelProtocol.encodeRoundStarted(
+                            round
                     )
             );
         } else if (room.getGameMode()
@@ -436,16 +470,28 @@ public class ClientHandler implements Runnable {
                             authenticatedPlayerId
                     );
 
-            broadcastRoomState(room);
+            roundStarted = new GameMessage(
+                    CooperativeProtocol.ROUND_STATE,
+                    "",
+                    roomId,
+                    CooperativeProtocol
+                            .encodeRoundStarted(round)
+            );
+        } else if (room.getGameMode()
+                == GameMode.HOST) {
 
-            broadcastToRoom(
-                    room,
-                    new GameMessage(
-                            CooperativeProtocol.ROUND_STATE,
-                            "",
+            HostRound round =
+                    hostGameService.startRound(
                             roomId,
-                            CooperativeProtocol
-                                    .encodeRoundStarted(round)
+                            authenticatedPlayerId
+                    );
+
+            roundStarted = new GameMessage(
+                    HostProtocol.ROUND_STATE,
+                    "",
+                    roomId,
+                    HostProtocol.encodeRoundStarted(
+                            round
                     )
             );
         } else {
@@ -453,6 +499,9 @@ public class ClientHandler implements Runnable {
                     "This game mode is not implemented yet."
             );
         }
+
+        broadcastRoomState(room);
+        broadcastToRoom(room, roundStarted);
 
         gameEventNotifier.roundStarted(
                 roomId,
@@ -471,29 +520,29 @@ public class ClientHandler implements Runnable {
         GameRoom room =
                 roomManager.requireRoom(roomId);
 
-        if (room.getGameMode() == GameMode.DUEL) {
-            processDuelGuess(
-                    room,
-                    message.getContent()
+        switch (room.getGameMode()) {
+            case DUEL ->
+                    processDuelGuess(
+                            room,
+                            message.getContent()
+                    );
+
+            case COOPERATIVE ->
+                    processCooperativeGuess(
+                            room,
+                            message.getContent()
+                    );
+
+            case HOST ->
+                    processHostGuess(
+                            room,
+                            message.getContent()
+                    );
+
+            default -> throw new IllegalStateException(
+                    "This game mode is not implemented yet."
             );
-
-            return;
         }
-
-        if (room.getGameMode()
-                == GameMode.COOPERATIVE) {
-
-            processCooperativeGuess(
-                    room,
-                    message.getContent()
-            );
-
-            return;
-        }
-
-        throw new IllegalStateException(
-                "This game mode is not implemented yet."
-        );
     }
 
     private void processDuelGuess(
@@ -594,8 +643,7 @@ public class ClientHandler implements Runnable {
             GameRoom room,
             String content
     ) {
-        String roomId =
-                room.getRoomId();
+        String roomId = room.getRoomId();
 
         CooperativeRound.GuessOutcome outcome =
                 cooperativeGameService.submitGuess(
@@ -635,27 +683,18 @@ public class ClientHandler implements Runnable {
         );
 
         if (outcome.solved()) {
-            GamePlayer solvingPlayer =
+            GamePlayer solver =
                     room.requirePlayer(
                             outcome.solvingPlayerId()
                     );
 
             gameEventNotifier.playerSolved(
                     roomId,
-                    solvingPlayer.getPlayerId(),
-                    solvingPlayer.getUsername()
+                    solver.getPlayerId(),
+                    solver.getUsername()
             );
 
-            for (PlayerView player :
-                    room.getPlayerViews()) {
-
-                gameEventNotifier.scoreUpdated(
-                        roomId,
-                        player.getPlayerId(),
-                        player.getUsername(),
-                        player.getScore()
-                );
-            }
+            publishScores(room);
         }
 
         if (outcome.roundFinished()) {
@@ -679,6 +718,108 @@ public class ClientHandler implements Runnable {
                             outcome.solvingPlayerId()
                     ).getUsername()
             );
+        }
+    }
+
+    private void processHostGuess(
+            GameRoom room,
+            String content
+    ) {
+        String roomId = room.getRoomId();
+
+        HostRound.GuessOutcome outcome =
+                hostGameService.submitGuess(
+                        roomId,
+                        authenticatedPlayerId,
+                        HostProtocol.parseGuess(content)
+                );
+
+        HostRound round =
+                hostGameService.requireActiveRound(
+                        roomId
+                );
+
+        broadcastToRoom(
+                room,
+                new GameMessage(
+                        HostProtocol.GUESS_RESULT,
+                        authenticatedPlayerId,
+                        roomId,
+                        HostProtocol.encodeGuessResult(
+                                outcome
+                        )
+                )
+        );
+
+        broadcastRoomState(room);
+
+        broadcastToRoom(
+                room,
+                new GameMessage(
+                        HostProtocol.ROUND_STATE,
+                        "",
+                        roomId,
+                        HostProtocol.encodeRoundProgress(
+                                round
+                        )
+                )
+        );
+
+        if (outcome.solved()) {
+            GamePlayer solver =
+                    room.requirePlayer(
+                            outcome.solvingPlayerId()
+                    );
+
+            gameEventNotifier.playerSolved(
+                    roomId,
+                    solver.getPlayerId(),
+                    solver.getUsername()
+            );
+        }
+
+        if (outcome.roundFinished()) {
+            broadcastToRoom(
+                    room,
+                    new GameMessage(
+                            HostProtocol.GAME_OVER,
+                            "",
+                            roomId,
+                            HostProtocol.encodeGameOver(
+                                    round
+                            )
+                    )
+            );
+
+            publishScores(room);
+
+            String winnerId =
+                    round.isSolved()
+                            ? outcome.solvingPlayerId()
+                            : round.getHostPlayerId();
+
+            gameEventNotifier.roundEnded(
+                    roomId,
+                    winnerId,
+                    room.requirePlayer(
+                            winnerId
+                    ).getUsername()
+            );
+        }
+    }
+
+    private void publishScores(GameRoom room) {
+        for (PlayerView player :
+                room.getPlayerViews()) {
+
+            if (player.getScore() > 0) {
+                gameEventNotifier.scoreUpdated(
+                        room.getRoomId(),
+                        player.getPlayerId(),
+                        player.getUsername(),
+                        player.getScore()
+                );
+            }
         }
     }
 

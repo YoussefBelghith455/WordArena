@@ -6,6 +6,7 @@ import com.wordarena.server.game.CooperativeRound;
 import com.wordarena.server.game.DuelRound;
 import com.wordarena.server.game.GamePlayer;
 import com.wordarena.server.game.GameRoom;
+import com.wordarena.server.game.HostRound;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -43,22 +44,22 @@ class GameStatisticsServiceTest {
     }
 
     @Test
-    void shouldRegisterPlayerWithoutCompletedGame() {
+    void shouldRegisterPlayer() {
         statisticsService.registerPlayer(
                 host.getPlayerId(),
                 host.getUsername()
         );
 
-        PlayerStats stats =
+        assertEquals(
+                0,
                 repository.findPlayerStats(
                         host.getPlayerId()
-                ).orElseThrow();
-
-        assertEquals(0, stats.getGamesPlayed());
+                ).orElseThrow().getGamesPlayed()
+        );
     }
 
     @Test
-    void shouldRecordCompletedDuelOnce() {
+    void shouldRecordDuelOnce() {
         GameRoom room =
                 createRoom(GameMode.DUEL);
 
@@ -86,24 +87,10 @@ class GameStatisticsServiceTest {
                         round
                 )
         );
-
-        assertEquals(
-                1,
-                repository.findPlayerStats(
-                        host.getPlayerId()
-                ).orElseThrow().getGamesWon()
-        );
-
-        assertEquals(
-                1,
-                repository.findPlayerStats(
-                        secondPlayer.getPlayerId()
-                ).orElseThrow().getGamesLost()
-        );
     }
 
     @Test
-    void shouldRecordCooperativeVictoryForEveryPlayer() {
+    void shouldRecordCooperativeVictory() {
         GameRoom room =
                 createRoom(GameMode.COOPERATIVE);
 
@@ -117,62 +104,6 @@ class GameStatisticsServiceTest {
                 host.getPlayerId(),
                 "TRAIN"
         );
-
-        assertTrue(
-                statisticsService
-                        .recordCompletedCooperative(
-                                room,
-                                round
-                        )
-        );
-
-        PlayerStats hostStats =
-                repository.findPlayerStats(
-                        host.getPlayerId()
-                ).orElseThrow();
-
-        PlayerStats secondStats =
-                repository.findPlayerStats(
-                        secondPlayer.getPlayerId()
-                ).orElseThrow();
-
-        assertEquals(1, hostStats.getGamesWon());
-        assertEquals(1, secondStats.getGamesWon());
-        assertEquals(600, hostStats.getTotalScore());
-        assertEquals(600, secondStats.getTotalScore());
-    }
-
-    @Test
-    void shouldRecordCooperativeLossForEveryPlayer() {
-        GameRoom room =
-                createRoom(GameMode.COOPERATIVE);
-
-        CooperativeRound round =
-                new CooperativeRound(
-                        "TRAIN",
-                        List.of(host, secondPlayer)
-                );
-
-        List<String> guesses = List.of(
-                "APPLE",
-                "BEACH",
-                "CLOUD",
-                "DREAM",
-                "HOUSE",
-                "MOUSE"
-        );
-
-        for (int index = 0;
-             index < guesses.size();
-             index++) {
-
-            round.submitGuess(
-                    index % 2 == 0
-                            ? host.getPlayerId()
-                            : secondPlayer.getPlayerId(),
-                    guesses.get(index)
-            );
-        }
 
         statisticsService.recordCompletedCooperative(
                 room,
@@ -181,97 +112,162 @@ class GameStatisticsServiceTest {
 
         assertEquals(
                 1,
-                repository.findPlayerStats(
-                        host.getPlayerId()
-                ).orElseThrow().getGamesLost()
+                stats(host).getGamesWon()
         );
 
         assertEquals(
                 1,
-                repository.findPlayerStats(
-                        secondPlayer.getPlayerId()
-                ).orElseThrow().getGamesLost()
+                stats(secondPlayer).getGamesWon()
         );
     }
 
     @Test
-    void shouldNotRecordCooperativeRoundTwice() {
+    void shouldRecordHostVictory() {
         GameRoom room =
-                createRoom(GameMode.COOPERATIVE);
+                createRoom(GameMode.HOST);
 
-        CooperativeRound round =
-                new CooperativeRound(
+        HostRound round =
+                new HostRound(
                         "TRAIN",
+                        host,
+                        List.of(host, secondPlayer)
+                );
+
+        for (String guess : List.of(
+                "APPLE",
+                "BEACH",
+                "CLOUD",
+                "DREAM",
+                "HOUSE",
+                "MOUSE"
+        )) {
+            round.submitGuess(
+                    secondPlayer.getPlayerId(),
+                    guess
+            );
+        }
+
+        assertTrue(
+                statisticsService.recordCompletedHost(
+                        room,
+                        round
+                )
+        );
+
+        assertEquals(
+                1,
+                stats(host).getGamesWon()
+        );
+
+        assertEquals(
+                600,
+                stats(host).getTotalScore()
+        );
+
+        assertEquals(
+                1,
+                stats(secondPlayer).getGamesLost()
+        );
+    }
+
+    @Test
+    void shouldRecordGuessingTeamVictory() {
+        GameRoom room =
+                createRoom(GameMode.HOST);
+
+        HostRound round =
+                new HostRound(
+                        "TRAIN",
+                        host,
                         List.of(host, secondPlayer)
                 );
 
         round.submitGuess(
-                host.getPlayerId(),
+                secondPlayer.getPlayerId(),
                 "TRAIN"
         );
 
-        assertTrue(
-                statisticsService
-                        .recordCompletedCooperative(
-                                room,
-                                round
-                        )
-        );
-
-        assertFalse(
-                statisticsService
-                        .recordCompletedCooperative(
-                                room,
-                                round
-                        )
+        statisticsService.recordCompletedHost(
+                room,
+                round
         );
 
         assertEquals(
                 1,
-                statisticsService.getRecordedRoundCount()
+                stats(host).getGamesLost()
+        );
+
+        assertEquals(
+                1,
+                stats(secondPlayer).getGamesWon()
+        );
+
+        assertEquals(
+                600,
+                stats(secondPlayer).getTotalScore()
         );
     }
 
     @Test
-    void shouldRejectUnfinishedDuel() {
+    void shouldNotRecordHostRoundTwice() {
         GameRoom room =
-                createRoom(GameMode.DUEL);
+                createRoom(GameMode.HOST);
 
-        DuelRound round =
-                new DuelRound(
+        HostRound round =
+                new HostRound(
                         "TRAIN",
+                        host,
+                        List.of(host, secondPlayer)
+                );
+
+        round.submitGuess(
+                secondPlayer.getPlayerId(),
+                "TRAIN"
+        );
+
+        assertTrue(
+                statisticsService.recordCompletedHost(
+                        room,
+                        round
+                )
+        );
+
+        assertFalse(
+                statisticsService.recordCompletedHost(
+                        room,
+                        round
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectUnfinishedHostRound() {
+        GameRoom room =
+                createRoom(GameMode.HOST);
+
+        HostRound round =
+                new HostRound(
+                        "TRAIN",
+                        host,
                         List.of(host, secondPlayer)
                 );
 
         assertThrows(
                 IllegalStateException.class,
                 () -> statisticsService
-                        .recordCompletedDuel(
+                        .recordCompletedHost(
                                 room,
                                 round
                         )
         );
     }
 
-    @Test
-    void shouldRejectUnfinishedCooperativeRound() {
-        GameRoom room =
-                createRoom(GameMode.COOPERATIVE);
-
-        CooperativeRound round =
-                new CooperativeRound(
-                        "TRAIN",
-                        List.of(host, secondPlayer)
-                );
-
-        assertThrows(
-                IllegalStateException.class,
-                () -> statisticsService
-                        .recordCompletedCooperative(
-                                room,
-                                round
-                        )
-        );
+    private PlayerStats stats(
+            GamePlayer player
+    ) {
+        return repository.findPlayerStats(
+                player.getPlayerId()
+        ).orElseThrow();
     }
 
     private GameRoom createRoom(

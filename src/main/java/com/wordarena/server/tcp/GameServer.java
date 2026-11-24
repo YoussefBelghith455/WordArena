@@ -2,6 +2,7 @@ package com.wordarena.server.tcp;
 
 import com.wordarena.server.game.CooperativeGameService;
 import com.wordarena.server.game.DuelGameService;
+import com.wordarena.server.game.HostGameService;
 import com.wordarena.server.game.RoomManager;
 import com.wordarena.server.game.WordBank;
 import com.wordarena.server.jms.GameEventNotifier;
@@ -26,13 +27,17 @@ public class GameServer {
     private final PlayerSessionRegistry sessionRegistry;
     private final RoomManager roomManager;
     private final ClientConnectionRegistry connectionRegistry;
+
     private final DuelGameService duelGameService;
     private final CooperativeGameService cooperativeGameService;
+    private final HostGameService hostGameService;
+
     private final GameEventNotifier gameEventNotifier;
     private final RmiServiceManager rmiServiceManager;
 
     public GameServer(int port) {
         this.port = port;
+
         this.clientExecutor =
                 Executors.newCachedThreadPool();
 
@@ -67,6 +72,12 @@ public class GameServer {
                 new CooperativeGameService(
                         roomManager,
                         wordBank,
+                        statisticsService
+                );
+
+        this.hostGameService =
+                new HostGameService(
+                        roomManager,
                         statisticsService
                 );
 
@@ -131,6 +142,7 @@ public class GameServer {
                                 connectionRegistry,
                                 duelGameService,
                                 cooperativeGameService,
+                                hostGameService,
                                 gameEventNotifier
                         )
                 );

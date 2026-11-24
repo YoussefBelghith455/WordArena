@@ -93,9 +93,12 @@ public class ConsoleLoginClient {
                 )
         );
 
-        Object receivedObject = input.readObject();
+        Object receivedObject =
+                input.readObject();
 
-        if (!(receivedObject instanceof GameMessage response)) {
+        if (!(receivedObject
+                instanceof GameMessage response)) {
+
             System.err.println(
                     "The server returned an unsupported object."
             );
@@ -110,6 +113,7 @@ public class ConsoleLoginClient {
         }
 
         playerId = response.getPlayerId();
+
         return true;
     }
 
@@ -126,9 +130,12 @@ public class ConsoleLoginClient {
     private void listenForServerMessages() {
         while (running) {
             try {
-                Object receivedObject = input.readObject();
+                Object receivedObject =
+                        input.readObject();
 
-                if (receivedObject instanceof GameMessage response) {
+                if (receivedObject
+                        instanceof GameMessage response) {
+
                     updateLocalState(response);
 
                     System.out.println();
@@ -165,12 +172,17 @@ public class ConsoleLoginClient {
         }
     }
 
-    private void updateLocalState(GameMessage response) {
-        if ("ROOM_STATE".equals(response.getType())
+    private void updateLocalState(
+            GameMessage response
+    ) {
+        if ("ROOM_STATE".equals(
+                response.getType()
+        )
                 && response.getRoomId() != null
                 && !response.getRoomId().isBlank()) {
 
-            currentRoomId = response.getRoomId();
+            currentRoomId =
+                    response.getRoomId();
         }
 
         if ("OK".equals(response.getType())
@@ -183,7 +195,9 @@ public class ConsoleLoginClient {
         }
     }
 
-    private void runCommandLoop() throws IOException {
+    private void runCommandLoop()
+            throws IOException {
+
         printHelp();
 
         while (running) {
@@ -193,20 +207,23 @@ public class ConsoleLoginClient {
                 break;
             }
 
-            String command = scanner.nextLine()
-                    .trim()
-                    .toLowerCase();
+            String command =
+                    scanner.nextLine()
+                            .trim()
+                            .toLowerCase();
 
             switch (command) {
                 case "create" -> createRoom();
                 case "join" -> joinRoom();
                 case "leave" -> leaveRoom();
                 case "ready" -> setReady();
+                case "lock" -> lockSecretWord();
                 case "start" -> startRound();
                 case "guess" -> submitGuess();
                 case "room" -> showCurrentRoom();
                 case "help" -> printHelp();
-                case "quit", "exit" -> running = false;
+                case "quit", "exit" ->
+                        running = false;
 
                 default -> System.out.println(
                         "Unknown command. Enter help "
@@ -216,27 +233,33 @@ public class ConsoleLoginClient {
         }
     }
 
-    private void createRoom() throws IOException {
+    private void createRoom()
+            throws IOException {
+
         System.out.print("Room name: ");
-        String roomName = scanner.nextLine();
+        String roomName =
+                scanner.nextLine();
 
         System.out.print(
                 "Game mode "
                         + "(DUEL, COOPERATIVE, HOST, DOUBLE_HOST): "
         );
 
-        String gameMode = scanner.nextLine()
-                .trim()
-                .toUpperCase();
+        String gameMode =
+                scanner.nextLine()
+                        .trim()
+                        .toUpperCase();
 
         System.out.print("Maximum players: ");
-        String maxPlayers = scanner.nextLine().trim();
+        String maxPlayers =
+                scanner.nextLine().trim();
 
-        String content = roomName
-                + "|"
-                + gameMode
-                + "|"
-                + maxPlayers;
+        String content =
+                roomName
+                        + "|"
+                        + gameMode
+                        + "|"
+                        + maxPlayers;
 
         sendMessage(
                 new GameMessage(
@@ -248,8 +271,12 @@ public class ConsoleLoginClient {
         );
     }
 
-    private void joinRoom() throws IOException {
-        String roomId = askForRoomId();
+    private void joinRoom()
+            throws IOException {
+
+        System.out.print("Room ID: ");
+        String roomId =
+                scanner.nextLine().trim();
 
         sendMessage(
                 new GameMessage(
@@ -261,8 +288,11 @@ public class ConsoleLoginClient {
         );
     }
 
-    private void leaveRoom() throws IOException {
-        String roomId = requireCurrentRoomId();
+    private void leaveRoom()
+            throws IOException {
+
+        String roomId =
+                requireCurrentRoomId();
 
         if (roomId == null) {
             return;
@@ -278,15 +308,22 @@ public class ConsoleLoginClient {
         );
     }
 
-    private void setReady() throws IOException {
-        String roomId = requireCurrentRoomId();
+    private void setReady()
+            throws IOException {
+
+        String roomId =
+                requireCurrentRoomId();
 
         if (roomId == null) {
             return;
         }
 
-        System.out.print("Ready state (true/false): ");
-        String ready = scanner.nextLine().trim();
+        System.out.print(
+                "Ready state (true/false): "
+        );
+
+        String ready =
+                scanner.nextLine().trim();
 
         sendMessage(
                 new GameMessage(
@@ -298,8 +335,40 @@ public class ConsoleLoginClient {
         );
     }
 
-    private void startRound() throws IOException {
-        String roomId = requireCurrentRoomId();
+    private void lockSecretWord()
+            throws IOException {
+
+        String roomId =
+                requireCurrentRoomId();
+
+        if (roomId == null) {
+            return;
+        }
+
+        System.out.print(
+                "Five-letter secret word: "
+        );
+
+        String secretWord =
+                scanner.nextLine()
+                        .trim()
+                        .toUpperCase();
+
+        sendMessage(
+                new GameMessage(
+                        "LOCK_WORD",
+                        playerId,
+                        roomId,
+                        secretWord
+                )
+        );
+    }
+
+    private void startRound()
+            throws IOException {
+
+        String roomId =
+                requireCurrentRoomId();
 
         if (roomId == null) {
             return;
@@ -315,17 +384,24 @@ public class ConsoleLoginClient {
         );
     }
 
-    private void submitGuess() throws IOException {
-        String roomId = requireCurrentRoomId();
+    private void submitGuess()
+            throws IOException {
+
+        String roomId =
+                requireCurrentRoomId();
 
         if (roomId == null) {
             return;
         }
 
-        System.out.print("Five-letter guess: ");
-        String guessedWord = scanner.nextLine()
-                .trim()
-                .toUpperCase();
+        System.out.print(
+                "Five-letter guess: "
+        );
+
+        String guessedWord =
+                scanner.nextLine()
+                        .trim()
+                        .toUpperCase();
 
         sendMessage(
                 new GameMessage(
@@ -338,7 +414,9 @@ public class ConsoleLoginClient {
     }
 
     private void showCurrentRoom() {
-        if (currentRoomId == null) {
+        if (currentRoomId == null
+                || currentRoomId.isBlank()) {
+
             System.out.println(
                     "You are not currently in a room."
             );
@@ -347,13 +425,9 @@ public class ConsoleLoginClient {
         }
 
         System.out.println(
-                "Current room ID: " + currentRoomId
+                "Current room ID: "
+                        + currentRoomId
         );
-    }
-
-    private String askForRoomId() {
-        System.out.print("Room ID: ");
-        return scanner.nextLine().trim();
     }
 
     private String requireCurrentRoomId() {
@@ -379,7 +453,9 @@ public class ConsoleLoginClient {
         output.reset();
     }
 
-    private void printMessage(GameMessage message) {
+    private void printMessage(
+            GameMessage message
+    ) {
         System.out.println(
                 "------------------------------"
         );
@@ -389,15 +465,18 @@ public class ConsoleLoginClient {
         );
 
         System.out.println(
-                "Player ID: " + message.getPlayerId()
+                "Player ID: "
+                        + message.getPlayerId()
         );
 
         System.out.println(
-                "Room ID: " + message.getRoomId()
+                "Room ID: "
+                        + message.getRoomId()
         );
 
         System.out.println(
-                "Content: " + message.getContent()
+                "Content: "
+                        + message.getContent()
         );
 
         System.out.println(
@@ -407,18 +486,57 @@ public class ConsoleLoginClient {
 
     private void printHelp() {
         System.out.println();
-        System.out.println("Available commands");
-        System.out.println("------------------------------");
-        System.out.println("create - Create a room");
-        System.out.println("join   - Join a room");
-        System.out.println("leave  - Leave the current room");
-        System.out.println("ready  - Change ready state");
-        System.out.println("start  - Start the Duel round");
-        System.out.println("guess  - Submit a five-letter guess");
-        System.out.println("room   - Display the current room ID");
-        System.out.println("help   - Display this menu");
-        System.out.println("quit   - Disconnect");
-        System.out.println("------------------------------");
+        System.out.println(
+                "Available commands"
+        );
+
+        System.out.println(
+                "------------------------------"
+        );
+
+        System.out.println(
+                "create - Create a room"
+        );
+
+        System.out.println(
+                "join   - Join a room"
+        );
+
+        System.out.println(
+                "leave  - Leave the current room"
+        );
+
+        System.out.println(
+                "ready  - Change ready state"
+        );
+
+        System.out.println(
+                "lock   - Lock the Host-mode secret word"
+        );
+
+        System.out.println(
+                "start  - Start the current round"
+        );
+
+        System.out.println(
+                "guess  - Submit a five-letter guess"
+        );
+
+        System.out.println(
+                "room   - Display the current room ID"
+        );
+
+        System.out.println(
+                "help   - Display this menu"
+        );
+
+        System.out.println(
+                "quit   - Disconnect"
+        );
+
+        System.out.println(
+                "------------------------------"
+        );
     }
 
     private void printPrompt() {
@@ -428,7 +546,9 @@ public class ConsoleLoginClient {
     private void closeConnection() {
         running = false;
 
-        if (socket != null && !socket.isClosed()) {
+        if (socket != null
+                && !socket.isClosed()) {
+
             try {
                 socket.close();
             } catch (IOException exception) {

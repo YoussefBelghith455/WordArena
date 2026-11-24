@@ -4,6 +4,7 @@ import com.wordarena.server.game.CooperativeRound;
 import com.wordarena.server.game.DuelRound;
 import com.wordarena.server.game.GamePlayer;
 import com.wordarena.server.game.GameRoom;
+import com.wordarena.server.game.HostRound;
 
 import java.util.Objects;
 import java.util.Set;
@@ -119,9 +120,6 @@ public class GameStatisticsService {
             return false;
         }
 
-        boolean teamWon =
-                cooperativeRound.isSolved();
-
         for (String playerId :
                 cooperativeRound.getPlayerIds()) {
 
@@ -131,7 +129,67 @@ public class GameStatisticsService {
             statisticsRepository.recordGameResult(
                     player.getPlayerId(),
                     player.getUsername(),
-                    teamWon,
+                    cooperativeRound.isSolved(),
+                    player.getScore()
+            );
+        }
+
+        return true;
+    }
+
+    public boolean recordCompletedHost(
+            GameRoom room,
+            HostRound hostRound
+    ) {
+        Objects.requireNonNull(
+                room,
+                "Game room is required."
+        );
+
+        Objects.requireNonNull(
+                hostRound,
+                "Host round is required."
+        );
+
+        if (!hostRound.isFinished()) {
+            throw new IllegalStateException(
+                    "Host statistics cannot be recorded "
+                            + "before the round finishes."
+            );
+        }
+
+        String roundKey =
+                room.getRoomId()
+                        + ":HOST:"
+                        + hostRound.getStartedAtTimestamp();
+
+        if (!recordedRoundKeys.add(roundKey)) {
+            return false;
+        }
+
+        boolean guessersWon =
+                hostRound.isSolved();
+
+        for (String playerId :
+                hostRound.getParticipantPlayerIds()) {
+
+            GamePlayer player =
+                    room.requirePlayer(playerId);
+
+            boolean won;
+
+            if (playerId.equals(
+                    hostRound.getHostPlayerId()
+            )) {
+                won = !guessersWon;
+            } else {
+                won = guessersWon;
+            }
+
+            statisticsRepository.recordGameResult(
+                    player.getPlayerId(),
+                    player.getUsername(),
+                    won,
                     player.getScore()
             );
         }
