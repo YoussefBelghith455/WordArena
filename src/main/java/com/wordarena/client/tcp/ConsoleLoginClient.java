@@ -12,7 +12,8 @@ import java.util.Scanner;
 
 public class ConsoleLoginClient {
 
-    private static final String SERVER_HOST = "localhost";
+    private static final String SERVER_HOST =
+            "localhost";
 
     private final Scanner scanner;
 
@@ -22,7 +23,10 @@ public class ConsoleLoginClient {
 
     private String playerId;
     private String currentRoomId;
+    private String reconnectToken;
+
     private volatile boolean running;
+    private volatile boolean reconnecting;
 
     public ConsoleLoginClient() {
         scanner = new Scanner(System.in);
@@ -39,14 +43,12 @@ public class ConsoleLoginClient {
             running = true;
             startServerMessageListener();
             runCommandLoop();
-        } catch (IOException exception) {
+        } catch (
+                IOException
+                | ClassNotFoundException exception
+        ) {
             System.err.println(
-                    "Unable to communicate with the WordArena server: "
-                            + exception.getMessage()
-            );
-        } catch (ClassNotFoundException exception) {
-            System.err.println(
-                    "The server response type is not supported: "
+                    "WordArena client error: "
                             + exception.getMessage()
             );
         } finally {
@@ -60,15 +62,17 @@ public class ConsoleLoginClient {
                 GameServer.DEFAULT_PORT
         );
 
-        output = new ObjectOutputStream(
-                socket.getOutputStream()
-        );
+        output =
+                new ObjectOutputStream(
+                        socket.getOutputStream()
+                );
 
         output.flush();
 
-        input = new ObjectInputStream(
-                socket.getInputStream()
-        );
+        input =
+                new ObjectInputStream(
+                        socket.getInputStream()
+                );
 
         System.out.println(
                 "Connected to WordArena server at "
@@ -82,7 +86,9 @@ public class ConsoleLoginClient {
             throws IOException, ClassNotFoundException {
 
         System.out.print("Enter username: ");
-        String username = scanner.nextLine();
+
+        String username =
+                scanner.nextLine();
 
         sendMessage(
                 new GameMessage(
@@ -93,35 +99,53 @@ public class ConsoleLoginClient {
                 )
         );
 
-        Object receivedObject =
+        Object object =
                 input.readObject();
 
-        if (!(receivedObject
+        if (!(object
                 instanceof GameMessage response)) {
-
-            System.err.println(
-                    "The server returned an unsupported object."
-            );
 
             return false;
         }
 
         printMessage(response);
 
-        if (!"OK".equals(response.getType())) {
+        if (!"OK".equals(
+                response.getType()
+        )) {
             return false;
         }
 
-        playerId = response.getPlayerId();
+        playerId =
+                response.getPlayerId();
 
-        return true;
+        Object tokenObject =
+                input.readObject();
+
+        if (tokenObject
+                instanceof GameMessage tokenMessage
+                && "RECONNECT_TOKEN".equals(
+                tokenMessage.getType()
+        )) {
+
+            updateLocalState(
+                    tokenMessage
+            );
+
+            printMessage(
+                    tokenMessage
+            );
+        }
+
+        return reconnectToken != null;
     }
 
     private void startServerMessageListener() {
-        Thread listenerThread = new Thread(
-                this::listenForServerMessages,
-                "wordarena-console-listener"
-        );
+        Thread listenerThread =
+                new Thread(
+                        this::listenForServerMessages,
+                        "wordarena-console-listener"
+                );
 
         listenerThread.setDaemon(true);
         listenerThread.start();
@@ -130,64 +154,104 @@ public class ConsoleLoginClient {
     private void listenForServerMessages() {
         while (running) {
             try {
-                Object receivedObject =
+                Object object =
                         input.readObject();
 
-                if (receivedObject
-                        instanceof GameMessage response) {
+                if (object
+                        instanceof GameMessage message) {
 
-                    updateLocalState(response);
+                    updateLocalState(message);
 
                     System.out.println();
-                    printMessage(response);
+                    printMessage(message);
                     printPrompt();
-                } else {
-                    System.err.println(
-                            "Received an unsupported server object."
-                    );
                 }
             } catch (EOFException exception) {
-                if (running) {
+                if (running
+                        && !reconnecting) {
+
                     System.out.println();
                     System.out.println(
-                            "The server closed the connection."
+                            "Connection lost. Use reconnect "
+                                    + "within two minutes."
                     );
+
+                    printPrompt();
                 }
 
-                running = false;
+                break;
             } catch (
                     IOException
                     | ClassNotFoundException exception
             ) {
-                if (running) {
+                if (running
+                        && !reconnecting) {
+
                     System.err.println();
                     System.err.println(
-                            "Server listener stopped: "
+                            "Connection unavailable: "
                                     + exception.getMessage()
                     );
+
+                    printPrompt();
                 }
 
-                running = false;
+                break;
             }
         }
     }
 
     private void updateLocalState(
-            GameMessage response
+            GameMessage message
     ) {
-        if ("ROOM_STATE".equals(
-                response.getType()
-        )
-                && response.getRoomId() != null
-                && !response.getRoomId().isBlank()) {
+        if ("RECONNECT_TOKEN".equals(
+                message.getType()
+        )) {
+            String content =
+                    message.getContent();
 
-            currentRoomId =
-                    response.getRoomId();
+            int separatorIndex =
+                    content.indexOf('|');
+
+            reconnectToken =
+                    separatorIndex < 0
+                            ? content
+                            : content.substring(
+                            0,
+                            separatorIndex
+                    );
         }
 
-        if ("OK".equals(response.getType())
-                && response.getContent() != null
-                && response.getContent().contains(
+        if ("RECONNECT_OK".equals(
+                message.getType()
+        )) {
+            String[] fields =
+                    message.getContent()
+                            .split("\\|", -1);
+
+            if (fields.length >= 3) {
+                playerId = fields[0];
+
+                currentRoomId =
+                        fields[2].isBlank()
+                                ? null
+                                : fields[2];
+            }
+        }
+
+        if ("ROOM_STATE".equals(
+                message.getType()
+        )
+                && message.getRoomId() != null
+                && !message.getRoomId().isBlank()) {
+
+            currentRoomId =
+                    message.getRoomId();
+        }
+
+        if ("OK".equals(message.getType())
+                && message.getContent() != null
+                && message.getContent().contains(
                 "Successfully left the room."
         )) {
 
@@ -212,24 +276,108 @@ public class ConsoleLoginClient {
                             .trim()
                             .toLowerCase();
 
-            switch (command) {
-                case "create" -> createRoom();
-                case "join" -> joinRoom();
-                case "leave" -> leaveRoom();
-                case "ready" -> setReady();
-                case "lock" -> lockSecretWord();
-                case "start" -> startRound();
-                case "guess" -> submitGuess();
-                case "room" -> showCurrentRoom();
-                case "help" -> printHelp();
-                case "quit", "exit" ->
-                        running = false;
+            try {
+                switch (command) {
+                    case "create" -> createRoom();
+                    case "join" -> joinRoom();
+                    case "leave" -> leaveRoom();
+                    case "ready" -> setReady();
+                    case "lock" -> lockSecretWord();
+                    case "start" -> startRound();
+                    case "guess" -> submitGuess();
+                    case "room" -> showCurrentRoom();
+                    case "token" -> showReconnectToken();
+                    case "reconnect" -> reconnect();
+                    case "help" -> printHelp();
+                    case "quit", "exit" ->
+                            running = false;
 
-                default -> System.out.println(
-                        "Unknown command. Enter help "
-                                + "to see the available commands."
+                    default -> System.out.println(
+                            "Unknown command. Enter help."
+                    );
+                }
+            } catch (IOException exception) {
+                System.out.println(
+                        "The connection is unavailable. "
+                                + "Use reconnect."
                 );
             }
+        }
+    }
+
+    private void reconnect() {
+        if (reconnectToken == null
+                || reconnectToken.isBlank()) {
+
+            System.out.println(
+                    "No reconnect token is available."
+            );
+
+            return;
+        }
+
+        try {
+            reconnecting = true;
+            closeSocketOnly();
+
+            Thread.sleep(250L);
+
+            connect();
+
+            sendMessage(
+                    new GameMessage(
+                            "RECONNECT",
+                            "",
+                            "",
+                            reconnectToken
+                    )
+            );
+
+            Object object =
+                    input.readObject();
+
+            if (!(object
+                    instanceof GameMessage response)) {
+
+                throw new IOException(
+                        "Unsupported reconnect response."
+                );
+            }
+
+            printMessage(response);
+            updateLocalState(response);
+
+            if (!"RECONNECT_OK".equals(
+                    response.getType()
+            )) {
+                closeSocketOnly();
+                return;
+            }
+
+            reconnecting = false;
+            startServerMessageListener();
+
+            System.out.println(
+                    "Reconnect completed."
+            );
+        } catch (
+                IOException
+                | ClassNotFoundException
+                | InterruptedException exception
+        ) {
+            reconnecting = false;
+
+            if (exception
+                    instanceof InterruptedException) {
+
+                Thread.currentThread()
+                        .interrupt();
+            }
+
+            System.err.println(
+                    "Reconnect failed: "
+                            + exception.getMessage()
+            );
         }
     }
 
@@ -237,36 +385,32 @@ public class ConsoleLoginClient {
             throws IOException {
 
         System.out.print("Room name: ");
-        String roomName =
-                scanner.nextLine();
+        String name = scanner.nextLine();
 
         System.out.print(
                 "Game mode "
                         + "(DUEL, COOPERATIVE, HOST, DOUBLE_HOST): "
         );
 
-        String gameMode =
+        String mode =
                 scanner.nextLine()
                         .trim()
                         .toUpperCase();
 
         System.out.print("Maximum players: ");
-        String maxPlayers =
+        String capacity =
                 scanner.nextLine().trim();
-
-        String content =
-                roomName
-                        + "|"
-                        + gameMode
-                        + "|"
-                        + maxPlayers;
 
         sendMessage(
                 new GameMessage(
                         "CREATE_ROOM",
                         playerId,
                         "",
-                        content
+                        name
+                                + "|"
+                                + mode
+                                + "|"
+                                + capacity
                 )
         );
     }
@@ -275,14 +419,12 @@ public class ConsoleLoginClient {
             throws IOException {
 
         System.out.print("Room ID: ");
-        String roomId =
-                scanner.nextLine().trim();
 
         sendMessage(
                 new GameMessage(
                         "JOIN_ROOM",
                         playerId,
-                        roomId,
+                        scanner.nextLine().trim(),
                         ""
                 )
         );
@@ -294,18 +436,16 @@ public class ConsoleLoginClient {
         String roomId =
                 requireCurrentRoomId();
 
-        if (roomId == null) {
-            return;
+        if (roomId != null) {
+            sendMessage(
+                    new GameMessage(
+                            "LEAVE_ROOM",
+                            playerId,
+                            roomId,
+                            ""
+                    )
+            );
         }
-
-        sendMessage(
-                new GameMessage(
-                        "LEAVE_ROOM",
-                        playerId,
-                        roomId,
-                        ""
-                )
-        );
     }
 
     private void setReady()
@@ -322,15 +462,12 @@ public class ConsoleLoginClient {
                 "Ready state (true/false): "
         );
 
-        String ready =
-                scanner.nextLine().trim();
-
         sendMessage(
                 new GameMessage(
                         "SET_READY",
                         playerId,
                         roomId,
-                        ready
+                        scanner.nextLine().trim()
                 )
         );
     }
@@ -349,17 +486,14 @@ public class ConsoleLoginClient {
                 "Five-letter secret word: "
         );
 
-        String secretWord =
-                scanner.nextLine()
-                        .trim()
-                        .toUpperCase();
-
         sendMessage(
                 new GameMessage(
                         "LOCK_WORD",
                         playerId,
                         roomId,
-                        secretWord
+                        scanner.nextLine()
+                                .trim()
+                                .toUpperCase()
                 )
         );
     }
@@ -370,18 +504,16 @@ public class ConsoleLoginClient {
         String roomId =
                 requireCurrentRoomId();
 
-        if (roomId == null) {
-            return;
+        if (roomId != null) {
+            sendMessage(
+                    new GameMessage(
+                            "START_ROUND",
+                            playerId,
+                            roomId,
+                            ""
+                    )
+            );
         }
-
-        sendMessage(
-                new GameMessage(
-                        "START_ROUND",
-                        playerId,
-                        roomId,
-                        ""
-                )
-        );
     }
 
     private void submitGuess()
@@ -398,35 +530,33 @@ public class ConsoleLoginClient {
                 "Five-letter guess: "
         );
 
-        String guessedWord =
-                scanner.nextLine()
-                        .trim()
-                        .toUpperCase();
-
         sendMessage(
                 new GameMessage(
                         "GUESS",
                         playerId,
                         roomId,
-                        guessedWord
+                        scanner.nextLine()
+                                .trim()
+                                .toUpperCase()
                 )
         );
     }
 
     private void showCurrentRoom() {
-        if (currentRoomId == null
-                || currentRoomId.isBlank()) {
-
-            System.out.println(
-                    "You are not currently in a room."
-            );
-
-            return;
-        }
-
         System.out.println(
-                "Current room ID: "
+                currentRoomId == null
+                        ? "You are not currently in a room."
+                        : "Current room ID: "
                         + currentRoomId
+        );
+    }
+
+    private void showReconnectToken() {
+        System.out.println(
+                reconnectToken == null
+                        ? "No reconnect token is available."
+                        : "Reconnect token: "
+                        + reconnectToken
         );
     }
 
@@ -495,43 +625,47 @@ public class ConsoleLoginClient {
         );
 
         System.out.println(
-                "create - Create a room"
+                "create    - Create a room"
         );
 
         System.out.println(
-                "join   - Join a room"
+                "join      - Join a room"
         );
 
         System.out.println(
-                "leave  - Leave the current room"
+                "leave     - Leave the current room"
         );
 
         System.out.println(
-                "ready  - Change ready state"
+                "ready     - Change ready state"
         );
 
         System.out.println(
-                "lock   - Lock the Host-mode secret word"
+                "lock      - Lock a private word"
         );
 
         System.out.println(
-                "start  - Start the current round"
+                "start     - Start the round"
         );
 
         System.out.println(
-                "guess  - Submit a five-letter guess"
+                "guess     - Submit a guess"
         );
 
         System.out.println(
-                "room   - Display the current room ID"
+                "room      - Display the room ID"
         );
 
         System.out.println(
-                "help   - Display this menu"
+                "token     - Display reconnect token"
         );
 
         System.out.println(
-                "quit   - Disconnect"
+                "reconnect - Reopen connection and restore state"
+        );
+
+        System.out.println(
+                "quit      - Exit"
         );
 
         System.out.println(
@@ -543,21 +677,20 @@ public class ConsoleLoginClient {
         System.out.print("> ");
     }
 
-    private void closeConnection() {
-        running = false;
-
+    private void closeSocketOnly() {
         if (socket != null
                 && !socket.isClosed()) {
 
             try {
                 socket.close();
-            } catch (IOException exception) {
-                System.err.println(
-                        "Unable to close the client socket: "
-                                + exception.getMessage()
-                );
+            } catch (IOException ignored) {
             }
         }
+    }
+
+    private void closeConnection() {
+        running = false;
+        closeSocketOnly();
     }
 
     public static void main(String[] args) {

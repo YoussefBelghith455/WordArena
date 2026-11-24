@@ -34,6 +34,7 @@ public class ClientHandler implements Runnable {
     private static final String LOCK_WORD = "LOCK_WORD";
     private static final String START_ROUND = "START_ROUND";
     private static final String GUESS = "GUESS";
+    private static final String RECONNECT = "RECONNECT";
 
     private static final String OK = "OK";
     private static final String ERROR = "ERROR";
@@ -49,6 +50,7 @@ public class ClientHandler implements Runnable {
     private final DoubleHostGameService doubleHostGameService;
 
     private final GameEventNotifier gameEventNotifier;
+    private final ReconnectSessionManager reconnectSessionManager;
 
     private ObjectOutputStream output;
     private ObjectInputStream input;
@@ -63,7 +65,8 @@ public class ClientHandler implements Runnable {
             CooperativeGameService cooperativeGameService,
             HostGameService hostGameService,
             DoubleHostGameService doubleHostGameService,
-            GameEventNotifier gameEventNotifier
+            GameEventNotifier gameEventNotifier,
+            ReconnectSessionManager reconnectSessionManager
     ) {
         this.clientSocket = clientSocket;
         this.sessionRegistry = sessionRegistry;
@@ -76,6 +79,8 @@ public class ClientHandler implements Runnable {
         this.doubleHostGameService =
                 doubleHostGameService;
         this.gameEventNotifier = gameEventNotifier;
+        this.reconnectSessionManager =
+                reconnectSessionManager;
     }
 
     @Override
@@ -167,6 +172,9 @@ public class ClientHandler implements Runnable {
             switch (message.getType()) {
                 case LOGIN ->
                         processLogin(message);
+
+                case RECONNECT ->
+                        processReconnect(message);
 
                 case CREATE_ROOM -> {
                     requireAuthenticatedRequest(message);
@@ -282,6 +290,12 @@ public class ClientHandler implements Runnable {
                 this
         );
 
+        ReconnectSession reconnectSession =
+                reconnectSessionManager.createSession(
+                        session.playerId(),
+                        session.username()
+                );
+
         sendMessage(
                 new GameMessage(
                         OK,
@@ -292,8 +306,122 @@ public class ClientHandler implements Runnable {
                                 + "."
                 )
         );
+
+        sendMessage(
+                new GameMessage(
+                        ReconnectProtocol.RECONNECT_TOKEN,
+                        session.playerId(),
+                        "",
+                        ReconnectProtocol.encodeToken(
+                                reconnectSession
+                        )
+                )
+        );
     }
 
+
+    private void processReconnect(
+            GameMessage message
+    ) throws IOException {
+
+        if (authenticatedPlayerId != null) {
+            throw new IllegalStateException(
+                    "This connection is already authenticated."
+            );
+        }
+
+        String reconnectToken =
+                ReconnectProtocol.parseReconnectToken(
+                        message.getContent()
+                );
+
+        ReconnectSession restoredSession =
+                reconnectSessionManager.restoreSession(
+                        reconnectToken
+                );
+
+        authenticatedPlayerId =
+                restoredSession.playerId();
+
+        connectionRegistry.register(
+                authenticatedPlayerId,
+                this
+        );
+
+        sendMessage(
+                new GameMessage(
+                        ReconnectProtocol.RECONNECT_OK,
+                        authenticatedPlayerId,
+                        restoredSession.roomId(),
+                        ReconnectProtocol
+                                .encodeReconnectSuccess(
+                                        restoredSession
+                                )
+                )
+        );
+
+        restoredSession.getRoomId()
+                .flatMap(roomManager::findRoom)
+                .ifPresent(room -> {
+                    broadcastRoomState(room);
+
+                    if (room.isStarted()) {
+                        sendRestoredRoundState(room);
+                    }
+                });
+    }
+
+    private void sendRestoredRoundState(
+            GameRoom room
+    ) {
+        String roundState = switch (
+                room.getGameMode()
+        ) {
+            case DUEL ->
+                    room.getDuelRound()
+                            .map(
+                                    ReconnectProtocol::
+                                            encodeDuelRound
+                            )
+                            .orElse("");
+
+            case COOPERATIVE ->
+                    room.getCooperativeRound()
+                            .map(
+                                    ReconnectProtocol::
+                                            encodeCooperativeRound
+                            )
+                            .orElse("");
+
+            case HOST ->
+                    ReconnectProtocol.encodeHostRound(
+                            hostGameService
+                                    .requireActiveRound(
+                                            room.getRoomId()
+                                    )
+                    );
+
+            case DOUBLE_HOST ->
+                    ReconnectProtocol.encodeDoubleHostRound(
+                            doubleHostGameService
+                                    .requireActiveRound(
+                                            room.getRoomId()
+                                    )
+                    );
+        };
+
+        if (!roundState.isBlank()) {
+            connectionRegistry.sendToPlayer(
+                    authenticatedPlayerId,
+                    new GameMessage(
+                            ReconnectProtocol.RECONNECT_OK,
+                            authenticatedPlayerId,
+                            room.getRoomId(),
+                            roundState
+                    )
+            );
+        }
+    }
     private void processCreateRoom(
             GameMessage message
     ) {
@@ -315,6 +443,11 @@ public class ClientHandler implements Runnable {
                                 session.username()
                         )
                 );
+
+        reconnectSessionManager.updateRoom(
+                authenticatedPlayerId,
+                room.getRoomId()
+        );
 
         broadcastRoomState(room);
 
@@ -344,6 +477,11 @@ public class ClientHandler implements Runnable {
                                 session.username()
                         )
                 );
+
+        reconnectSessionManager.updateRoom(
+                authenticatedPlayerId,
+                roomId
+        );
 
         broadcastRoomState(room);
 
@@ -389,6 +527,10 @@ public class ClientHandler implements Runnable {
                         roomId,
                         "Successfully left the room."
                 )
+        );
+
+        reconnectSessionManager.clearRoom(
+                authenticatedPlayerId
         );
 
         gameEventNotifier.playerLeft(
@@ -1254,73 +1396,58 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        String playerId =
+        String disconnectedPlayerId =
                 authenticatedPlayerId;
 
-        PlayerSessionRegistry.PlayerSession session =
-                sessionRegistry.findByPlayerId(
-                        playerId
-                ).orElse(null);
-
+        /*
+         * Preserve the current room membership and game state.
+         * The cleanup service removes them only after the
+         * 120-second reconnection window expires.
+         */
         roomManager.findRoomIdForPlayer(
-                        playerId
+                        disconnectedPlayerId
                 )
-                .ifPresent(roomId -> {
-                    GameRoom room =
-                            roomManager.findRoom(
-                                    roomId
-                            ).orElse(null);
-
-                    List<String> previousIds =
-                            room == null
-                                    ? List.of()
-                                    : extractPlayerIds(
-                                    room
-                            );
-
-                    boolean wasHost =
-                            room != null
-                                    && room.isHost(
-                                    playerId
-                            );
-
-                    roomManager.removePlayerAfterDisconnect(
-                            playerId
-                    );
-
-                    if (session != null) {
-                        gameEventNotifier.playerLeft(
-                                roomId,
-                                session.playerId(),
-                                session.username()
-                        );
-                    }
-
-                    if (room != null
-                            && wasHost) {
-
-                        notifyRoomClosed(
-                                previousIds,
+                .ifPresent(roomId ->
+                        reconnectSessionManager.updateRoom(
+                                disconnectedPlayerId,
                                 roomId
-                        );
-                    } else {
-                        roomManager.findRoom(
-                                        roomId
-                                )
-                                .ifPresent(
-                                        this::broadcastRoomState
-                                );
-                    }
-                });
+                        )
+                );
 
         connectionRegistry.remove(
-                playerId,
+                disconnectedPlayerId,
                 this
         );
 
-        sessionRegistry.remove(
-                playerId
-        );
+        try {
+            reconnectSessionManager.markDisconnected(
+                    disconnectedPlayerId
+            );
+
+            System.out.println(
+                    "Player can reconnect for "
+                            + reconnectSessionManager
+                            .getReconnectWindowMillis()
+                            / 1000
+                            + " seconds: "
+                            + disconnectedPlayerId
+            );
+        } catch (IllegalStateException exception) {
+            /*
+             * This applies only when LOGIN never completed
+             * and no reconnect session was created.
+             */
+            sessionRegistry.remove(
+                    disconnectedPlayerId
+            );
+
+            System.err.println(
+                    "Unable to preserve disconnected session "
+                            + disconnectedPlayerId
+                            + ": "
+                            + exception.getMessage()
+            );
+        }
 
         authenticatedPlayerId = null;
     }

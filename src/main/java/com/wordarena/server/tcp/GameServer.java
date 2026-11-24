@@ -37,6 +37,12 @@ public class GameServer {
     private final GameEventNotifier gameEventNotifier;
     private final RmiServiceManager rmiServiceManager;
 
+    private final ReconnectSessionManager
+            reconnectSessionManager;
+
+    private final ReconnectCleanupService
+            reconnectCleanupService;
+
     public GameServer(int port) {
         this.port = port;
 
@@ -99,6 +105,17 @@ public class GameServer {
                         roomManager,
                         statisticsRepository
                 );
+
+        this.reconnectSessionManager =
+                new ReconnectSessionManager();
+
+        this.reconnectCleanupService =
+                new ReconnectCleanupService(
+                        reconnectSessionManager,
+                        roomManager,
+                        sessionRegistry,
+                        gameEventNotifier
+                );
     }
 
     public void start() {
@@ -122,10 +139,12 @@ public class GameServer {
             return;
         }
 
+        reconnectCleanupService.start();
+
         Runtime.getRuntime().addShutdownHook(
                 new Thread(
-                        rmiServiceManager::stop,
-                        "wordarena-rmi-shutdown"
+                        this::stopServices,
+                        "wordarena-server-shutdown"
                 )
         );
 
@@ -136,6 +155,14 @@ public class GameServer {
             System.out.println(
                     "WordArena TCP server is listening on port "
                             + port
+            );
+
+            System.out.println(
+                    "Reconnect window: "
+                            + reconnectSessionManager
+                            .getReconnectWindowMillis()
+                            / 1000
+                            + " seconds"
             );
 
             while (!serverSocket.isClosed()) {
@@ -152,7 +179,8 @@ public class GameServer {
                                 cooperativeGameService,
                                 hostGameService,
                                 doubleHostGameService,
-                                gameEventNotifier
+                                gameEventNotifier,
+                                reconnectSessionManager
                         )
                 );
             }
@@ -162,13 +190,18 @@ public class GameServer {
                             + exception.getMessage()
             );
         } finally {
-            clientExecutor.shutdown();
-            rmiServiceManager.stop();
-
-            System.out.println(
-                    "WordArena server stopped."
-            );
+            stopServices();
         }
+    }
+
+    private synchronized void stopServices() {
+        reconnectCleanupService.stop();
+        clientExecutor.shutdown();
+        rmiServiceManager.stop();
+
+        System.out.println(
+                "WordArena server stopped."
+        );
     }
 
     public static void main(String[] args) {
