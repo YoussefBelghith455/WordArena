@@ -1,6 +1,7 @@
 package com.wordarena.server.tcp;
 
 import com.wordarena.server.game.CooperativeGameService;
+import com.wordarena.server.game.DoubleHostGameService;
 import com.wordarena.server.game.DuelGameService;
 import com.wordarena.server.game.HostGameService;
 import com.wordarena.server.game.RoomManager;
@@ -31,6 +32,7 @@ public class GameServer {
     private final DuelGameService duelGameService;
     private final CooperativeGameService cooperativeGameService;
     private final HostGameService hostGameService;
+    private final DoubleHostGameService doubleHostGameService;
 
     private final GameEventNotifier gameEventNotifier;
     private final RmiServiceManager rmiServiceManager;
@@ -77,6 +79,12 @@ public class GameServer {
 
         this.hostGameService =
                 new HostGameService(
+                        roomManager,
+                        statisticsService
+                );
+
+        this.doubleHostGameService =
+                new DoubleHostGameService(
                         roomManager,
                         statisticsService
                 );
@@ -143,6 +151,7 @@ public class GameServer {
                                 duelGameService,
                                 cooperativeGameService,
                                 hostGameService,
+                                doubleHostGameService,
                                 gameEventNotifier
                         )
                 );

@@ -1,6 +1,7 @@
 package com.wordarena.server.rmi;
 
 import com.wordarena.server.game.CooperativeRound;
+import com.wordarena.server.game.DoubleHostRound;
 import com.wordarena.server.game.DuelRound;
 import com.wordarena.server.game.GamePlayer;
 import com.wordarena.server.game.GameRoom;
@@ -42,22 +43,13 @@ public class GameStatisticsService {
             GameRoom room,
             DuelRound duelRound
     ) {
-        Objects.requireNonNull(
+        requireFinished(
                 room,
-                "Game room is required."
+                duelRound != null
+                        && duelRound.isFinished(),
+                "Duel statistics cannot be recorded "
+                        + "before the round finishes."
         );
-
-        Objects.requireNonNull(
-                duelRound,
-                "Duel round is required."
-        );
-
-        if (!duelRound.isFinished()) {
-            throw new IllegalStateException(
-                    "Duel statistics cannot be recorded "
-                            + "before the round finishes."
-            );
-        }
 
         String roundKey =
                 room.getRoomId()
@@ -68,21 +60,17 @@ public class GameStatisticsService {
             return false;
         }
 
-        String winnerPlayerId =
+        String winnerId =
                 duelRound.getWinnerPlayerId()
                         .orElse("");
 
         for (String playerId :
                 duelRound.getPlayerIds()) {
 
-            GamePlayer player =
-                    room.requirePlayer(playerId);
-
-            statisticsRepository.recordGameResult(
-                    player.getPlayerId(),
-                    player.getUsername(),
-                    playerId.equals(winnerPlayerId),
-                    player.getScore()
+            recordPlayer(
+                    room,
+                    playerId,
+                    playerId.equals(winnerId)
             );
         }
 
@@ -93,22 +81,13 @@ public class GameStatisticsService {
             GameRoom room,
             CooperativeRound cooperativeRound
     ) {
-        Objects.requireNonNull(
+        requireFinished(
                 room,
-                "Game room is required."
+                cooperativeRound != null
+                        && cooperativeRound.isFinished(),
+                "Cooperative statistics cannot be recorded "
+                        + "before the round finishes."
         );
-
-        Objects.requireNonNull(
-                cooperativeRound,
-                "Cooperative round is required."
-        );
-
-        if (!cooperativeRound.isFinished()) {
-            throw new IllegalStateException(
-                    "Cooperative statistics cannot be recorded "
-                            + "before the round finishes."
-            );
-        }
 
         String roundKey =
                 room.getRoomId()
@@ -123,14 +102,10 @@ public class GameStatisticsService {
         for (String playerId :
                 cooperativeRound.getPlayerIds()) {
 
-            GamePlayer player =
-                    room.requirePlayer(playerId);
-
-            statisticsRepository.recordGameResult(
-                    player.getPlayerId(),
-                    player.getUsername(),
-                    cooperativeRound.isSolved(),
-                    player.getScore()
+            recordPlayer(
+                    room,
+                    playerId,
+                    cooperativeRound.isSolved()
             );
         }
 
@@ -141,22 +116,13 @@ public class GameStatisticsService {
             GameRoom room,
             HostRound hostRound
     ) {
-        Objects.requireNonNull(
+        requireFinished(
                 room,
-                "Game room is required."
+                hostRound != null
+                        && hostRound.isFinished(),
+                "Host statistics cannot be recorded "
+                        + "before the round finishes."
         );
-
-        Objects.requireNonNull(
-                hostRound,
-                "Host round is required."
-        );
-
-        if (!hostRound.isFinished()) {
-            throw new IllegalStateException(
-                    "Host statistics cannot be recorded "
-                            + "before the round finishes."
-            );
-        }
 
         String roundKey =
                 room.getRoomId()
@@ -167,30 +133,63 @@ public class GameStatisticsService {
             return false;
         }
 
-        boolean guessersWon =
-                hostRound.isSolved();
-
         for (String playerId :
                 hostRound.getParticipantPlayerIds()) {
 
-            GamePlayer player =
-                    room.requirePlayer(playerId);
+            boolean won =
+                    hostRound.isSolved()
+                            ? !playerId.equals(
+                            hostRound
+                                    .getHostPlayerId()
+                    )
+                            : playerId.equals(
+                            hostRound
+                                    .getHostPlayerId()
+                    );
 
-            boolean won;
+            recordPlayer(
+                    room,
+                    playerId,
+                    won
+            );
+        }
 
-            if (playerId.equals(
-                    hostRound.getHostPlayerId()
-            )) {
-                won = !guessersWon;
-            } else {
-                won = guessersWon;
-            }
+        return true;
+    }
 
-            statisticsRepository.recordGameResult(
-                    player.getPlayerId(),
-                    player.getUsername(),
-                    won,
-                    player.getScore()
+    public boolean recordCompletedDoubleHost(
+            GameRoom room,
+            DoubleHostRound doubleHostRound
+    ) {
+        requireFinished(
+                room,
+                doubleHostRound != null
+                        && doubleHostRound.isFinished(),
+                "Double Host statistics cannot be recorded "
+                        + "before the round finishes."
+        );
+
+        String roundKey =
+                room.getRoomId()
+                        + ":DOUBLE_HOST:"
+                        + doubleHostRound
+                        .getStartedAtTimestamp();
+
+        if (!recordedRoundKeys.add(roundKey)) {
+            return false;
+        }
+
+        String winnerId =
+                doubleHostRound.getWinnerPlayerId()
+                        .orElse("");
+
+        for (String playerId :
+                doubleHostRound.getPlayerIds()) {
+
+            recordPlayer(
+                    room,
+                    playerId,
+                    playerId.equals(winnerId)
             );
         }
 
@@ -205,5 +204,38 @@ public class GameStatisticsService {
 
     public int getRecordedRoundCount() {
         return recordedRoundKeys.size();
+    }
+
+    private void recordPlayer(
+            GameRoom room,
+            String playerId,
+            boolean won
+    ) {
+        GamePlayer player =
+                room.requirePlayer(playerId);
+
+        statisticsRepository.recordGameResult(
+                player.getPlayerId(),
+                player.getUsername(),
+                won,
+                player.getScore()
+        );
+    }
+
+    private void requireFinished(
+            GameRoom room,
+            boolean finished,
+            String errorMessage
+    ) {
+        Objects.requireNonNull(
+                room,
+                "Game room is required."
+        );
+
+        if (!finished) {
+            throw new IllegalStateException(
+                    errorMessage
+            );
+        }
     }
 }
